@@ -101,7 +101,7 @@ Example `RoslynMcp.jsonc` — the repo ships [`RoslynMcp.jsonc.sample`](RoslynMc
 
 ```jsonc
 {
-  // Workspace: path + MSBuild global properties (lazy loading)
+  // Workspace: path + MSBuild global properties (prewarmed in the background at server start)
   "workspace-path": "F:/src/MyApp/MyApp.sln", // .sln / .slnx / .csproj
   "configuration": "Sit-Debug",               // optional
   "platform": "AnyCPU",                       // optional
@@ -115,11 +115,15 @@ Example `RoslynMcp.jsonc` — the repo ships [`RoslynMcp.jsonc.sample`](RoslynMc
 
 Use `reload` after changing these values (or to re-load a different `workspace-path` when the solution changes).
 
-If the config is **not** set, the agent can still open a workspace explicitly with **`load_workspace`** (an absolute `.sln`/`.slnx`/`.csproj` path, no server restart needed) — the configured workspace otherwise loads lazily on the first semantic call. **`reset_workspace`** disposes the in-process `MSBuildWorkspace` and drops the cached solution (frees memory / clean state, e.g. before switching solutions or parameters via `load_workspace`).
+If the config is **not** set, the agent can still open a workspace explicitly with **`load_workspace`** (an absolute `.sln`/`.slnx`/`.csproj` path, no server restart needed) — the configured workspace otherwise **prewarms in the background right after the server starts** (a semantic call loads it lazily as a fallback, so the first call mid-prewarm waits for the load). **`reset_workspace`** disposes the in-process `MSBuildWorkspace` and drops the cached solution (frees memory / clean state, e.g. before switching solutions or parameters via `load_workspace`).
 
 ## Agent tools by version
 
 Tracks MCP tools relevant to [`AGENTS.md.sample`](AGENTS.md.sample) (copy into app repos as `AGENTS.md`). Current server version: see `RoslynMcpServer.csproj`.
+
+### v1.4.0
+
+- **Workspace prewarm at server start** — when `workspace-path` is set in `RoslynMcp.jsonc`, the workspace load now starts **in the background right after the MCP server starts** (the stdio transport still answers instantly; `get_mcp_server_info` reports "loading in the background"). By the time the agent issues its first `find_*` / `load_workspace` call the load is usually already done — "opening" the project no longer blocks for the full load time; a first semantic call mid-prewarm simply waits for the in-flight load (no double load). A failed prewarm keeps the lazy-load contract: a logged warning and the "no active workspace" guidance on the next semantic call.
 
 ### v1.3.1
 

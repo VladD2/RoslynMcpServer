@@ -53,6 +53,7 @@ public sealed class SolutionManager
     private FileSystemWatcher? _diskWatcher;
     private volatile bool _refreshAllDocuments;
     private volatile bool _projectGraphStale;
+    private volatile bool _loadInProgress;
 
     private MSBuildWorkspace? _workspace;
     private Solution? _solution;
@@ -86,6 +87,13 @@ public sealed class SolutionManager
 
     /// <summary>MSBuild <c>TargetFramework</c> used for the last successful <see cref="LoadAsync"/>, or <see langword="null"/>.</summary>
     public string? LoadedTargetFramework => _loadedTargetFramework;
+
+    /// <summary>
+    /// True while a real workspace load is running under <c>_workspaceLock</c> (the startup prewarm or an
+    /// explicit <c>load_workspace</c> / <c>reload</c> / lazy load). A semantic request arriving mid-load
+    /// simply waits on the lock; the flag lets <c>get_mcp_server_info</c> report "loading" instead of "no".
+    /// </summary>
+    public bool IsLoadInProgress => _loadInProgress;
 
     public async Task<Solution> LoadAsync(string path)
     {
@@ -627,71 +635,79 @@ public sealed class SolutionManager
             return cached;
         }
 
-        StopDiskWatcherUnderLock();
-        _workspace?.Dispose();
-        _dirtySourcePaths.Clear();
-        _selfWriteUntilTicks.Clear();
-        _refreshAllDocuments = false;
-        _projectGraphStale = false;
-        _ = typeof(CSharpFormattingOptions).Assembly.FullName;
-        var properties = MsBuildWorkspaceProperties.Create(configuration, platform, targetFramework);
-        var workspace = properties.Count == 0
-            ? MSBuildWorkspace.Create(MsBuildHostServices)
-            : MSBuildWorkspace.Create(properties, MsBuildHostServices);
-        var capturedDiagnostics = new List<WorkspaceDiagnostic>();
-        workspace.RegisterWorkspaceFailedHandler(e =>
-        {
-            capturedDiagnostics.Add(e.Diagnostic);
-            _logger.LogWarning(
-                "MSBuildWorkspace {Kind}: {Message}",
-                e.Diagnostic.Kind,
-                e.Diagnostic.Message);
-        });
-
+        _loadInProgress = true;
         try
         {
-            var extension = Path.GetExtension(fullPath);
-            if (string.Equals(extension, ".sln", _pathComparison)
-                || string.Equals(extension, ".slnx", _pathComparison))
+            StopDiskWatcherUnderLock();
+            _workspace?.Dispose();
+            _dirtySourcePaths.Clear();
+            _selfWriteUntilTicks.Clear();
+            _refreshAllDocuments = false;
+            _projectGraphStale = false;
+            _ = typeof(CSharpFormattingOptions).Assembly.FullName;
+            var properties = MsBuildWorkspaceProperties.Create(configuration, platform, targetFramework);
+            var workspace = properties.Count == 0
+                ? MSBuildWorkspace.Create(MsBuildHostServices)
+                : MSBuildWorkspace.Create(properties, MsBuildHostServices);
+            var capturedDiagnostics = new List<WorkspaceDiagnostic>();
+            workspace.RegisterWorkspaceFailedHandler(e =>
             {
-                _ = await workspace.OpenSolutionAsync(fullPath, cancellationToken: cancellationToken);
-            }
-            else if (string.Equals(extension, ".csproj", _pathComparison))
+                capturedDiagnostics.Add(e.Diagnostic);
+                _logger.LogWarning(
+                    "MSBuildWorkspace {Kind}: {Message}",
+                    e.Diagnostic.Kind,
+                    e.Diagnostic.Message);
+            });
+
+            try
             {
-                var project = await workspace.OpenProjectAsync(fullPath, cancellationToken: cancellationToken);
-                _ = workspace.CurrentSolution.GetProject(project.Id)
-                    ?? throw new InvalidOperationException($"Unable to load project '{fullPath}'.");
+                var extension = Path.GetExtension(fullPath);
+                if (string.Equals(extension, ".sln", _pathComparison)
+                    || string.Equals(extension, ".slnx", _pathComparison))
+                {
+                    _ = await workspace.OpenSolutionAsync(fullPath, cancellationToken: cancellationToken);
+                }
+                else if (string.Equals(extension, ".csproj", _pathComparison))
+                {
+                    var project = await workspace.OpenProjectAsync(fullPath, cancellationToken: cancellationToken);
+                    _ = workspace.CurrentSolution.GetProject(project.Id)
+                        ?? throw new InvalidOperationException($"Unable to load project '{fullPath}'.");
+                }
+                else
+                {
+                    workspace.Dispose();
+                    throw new NotSupportedException("Only .sln, .slnx, and .csproj files are supported.");
+                }
             }
-            else
+            catch (Exception ex) when (WorkspaceLoadGuidance.IsRoslynMsBuildBuildHostFailure(ex))
             {
                 workspace.Dispose();
-                throw new NotSupportedException("Only .sln, .slnx, and .csproj files are supported.");
+                throw new RoslynMsBuildBuildHostException(
+                    WorkspaceLoadGuidance.FormatRoslynMsBuildBuildHostFailureMessage(fullPath),
+                    ex);
             }
-        }
-        catch (Exception ex) when (WorkspaceLoadGuidance.IsRoslynMsBuildBuildHostFailure(ex))
-        {
-            workspace.Dispose();
-            throw new RoslynMsBuildBuildHostException(
-                WorkspaceLoadGuidance.FormatRoslynMsBuildBuildHostFailureMessage(fullPath),
-                ex);
-        }
 
-        _workspace = workspace;
-        _solution = workspace.CurrentSolution;
-        _loadedPath = fullPath;
-        _loadedConfiguration = configuration;
-        _loadedPlatform = platform;
-        _loadedTargetFramework = targetFramework;
-        _lastDiagnostics = CollectDiagnostics(workspace, capturedDiagnostics);
-        StartDiskWatcherUnderLock(fullPath);
-        _logger.LogInformation(
-            "Loaded Roslyn workspace from {Path} (Configuration={Configuration}, Platform={Platform}, TargetFramework={TargetFramework})",
-            fullPath,
-            configuration ?? "(default)",
-            platform ?? "(default)",
-            targetFramework ?? "(default)");
-        LogProcessWorkingSet("workspace_load");
-        return _solution;
+            _workspace = workspace;
+            _solution = workspace.CurrentSolution;
+            _loadedPath = fullPath;
+            _loadedConfiguration = configuration;
+            _loadedPlatform = platform;
+            _loadedTargetFramework = targetFramework;
+            _lastDiagnostics = CollectDiagnostics(workspace, capturedDiagnostics);
+            StartDiskWatcherUnderLock(fullPath);
+            _logger.LogInformation(
+                "Loaded Roslyn workspace from {Path} (Configuration={Configuration}, Platform={Platform}, TargetFramework={TargetFramework})",
+                fullPath,
+                configuration ?? "(default)",
+                platform ?? "(default)",
+                targetFramework ?? "(default)");
+            LogProcessWorkingSet("workspace_load");
+            return _solution;
+        }
+        finally
+        {
+            _loadInProgress = false;
+        }
     }
 
     /// <summary>

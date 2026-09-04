@@ -47,11 +47,19 @@ public static class McpServerInfoHelper
         sb.AppendLine($"- **target-framework:** {(string.IsNullOrWhiteSpace(workspaceConfig.TargetFramework) ? "(not set)" : $"`{workspaceConfig.TargetFramework}`")}");
         sb.AppendLine();
 
-        // Workspace state (loaded lazily from config on the first semantic call, or via `reload`).
+        // Workspace state (prewarmed in the background at server start when the config sets workspace-path;
+        // a semantic call also loads it lazily; `reload` / `load_workspace` load explicitly).
         sb.AppendLine("### Workspace");
         if (loadedSolution is null)
         {
-            sb.AppendLine("- **Workspace loaded:** no (loaded lazily from the config `workspace-path` on the first semantic call, or via `reload`)");
+            if (solutionManager.IsLoadInProgress)
+            {
+                sb.AppendLine("- **Workspace loaded:** loading in the background (a semantic call issued now waits for the load to finish)");
+            }
+            else
+            {
+                sb.AppendLine("- **Workspace loaded:** no (prewarmed in the background at server start when the config `workspace-path` is set; a semantic call also loads it lazily, or use `reload`)");
+            }
         }
         else
         {

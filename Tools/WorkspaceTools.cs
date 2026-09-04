@@ -74,7 +74,7 @@ public sealed class WorkspaceTools
     [McpServerTool(Name = "load_workspace", Title = "Load C# workspace explicitly")]
     [Description(
         "Explicitly loads a `.sln`/`.slnx`/`.csproj` into the semantic engine **without restarting the MCP server**. "
-        + "Use when `workspace-path` is not set in `RoslynMcp.jsonc` (the configured workspace otherwise loads lazily and this tool is not needed), "
+        + "Use when `workspace-path` is not set in `RoslynMcp.jsonc` (the configured workspace otherwise prewarms in the background right after the server starts and this tool is not needed), "
         + "to load a different solution than the config, or to override `configuration`/`platform`/`target-framework` "
         + "(same path + properties returns the cache unless the project graph is stale). "
         + "A different path or properties replaces the currently loaded workspace. "

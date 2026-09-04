@@ -42,7 +42,7 @@ public static class WorkspaceHealthReporter
         sb.AppendLine($"- **Registered MCP tools:** {CountRegisteredTools()} (use `get_mcp_server_info` for binary path)");
         sb.AppendLine();
         sb.AppendLine(
-            "> **Workflow:** The workspace is loaded lazily from the `RoslynMcp.jsonc` config (`workspace-path`); use `reload` to force a reload after `dotnet build` or `.csproj`/`.sln`/`Directory.Build.props` changes. "
+            "> **Workflow:** The workspace prewarms in the background from the `RoslynMcp.jsonc` config (`workspace-path`) right after the server starts; use `reload` to force a reload after `dotnet build` or `.csproj`/`.sln`/`Directory.Build.props` changes. "
             + "Build/test/run via `run_dotnet_build`, `run_dotnet_test`, `run_dotnet_run` — not raw shell `dotnet`. "
             + "Find usages: `find_usages` / `find_symbol_references`.");
         return sb.ToString().TrimEnd();

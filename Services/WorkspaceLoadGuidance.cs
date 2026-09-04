@@ -5,8 +5,9 @@ namespace RoslynMcpServer.Services;
 
 /// <summary>
 /// Builds consistent "no workspace loaded" guidance with candidate .sln/.slnx paths.
-/// Does not auto-load: the workspace is loaded lazily from the <c>RoslynMcp.jsonc</c> config
-/// (<c>workspace-path</c>); <c>reload</c>/<c>load_workspace</c>/<c>reset_workspace</c> force a (re)load / clear.
+/// Does not auto-load synchronously: the workspace is prewarmed in the background from the
+/// <c>RoslynMcp.jsonc</c> config (<c>workspace-path</c>) right after the server starts (and loads lazily
+/// on the first semantic call as a fallback); <c>reload</c>/<c>load_workspace</c>/<c>reset_workspace</c> force a (re)load / clear.
 /// </summary>
 public static class WorkspaceLoadGuidance
 {
@@ -44,13 +45,13 @@ public static class WorkspaceLoadGuidance
         if (string.IsNullOrWhiteSpace(configuredPath))
         {
             sb.AppendLine(
-                "Set `workspace-path` in `RoslynMcp.jsonc` (exe directory or current directory) — the workspace will load lazily on the next semantic call. "
+                "Set `workspace-path` in `RoslynMcp.jsonc` (exe directory or current directory) — the workspace will load in the background right after the server starts (a semantic call loads it lazily as a fallback). "
                 + "Or call `load_workspace` with an absolute `.sln`/`.slnx`/`.csproj` path (no server restart needed).");
         }
         else if (TryFileExists(configuredPath))
         {
             sb.AppendLine(
-                $"The configured workspace `{configuredPath}` is not loaded (lazy load failed — see server log). "
+                $"The configured workspace `{configuredPath}` is not loaded (prewarm / lazy load failed — see server log). "
                 + "Retry with `reload`; to open a different solution pass `workspacePath` to `load_workspace`.");
         }
         else

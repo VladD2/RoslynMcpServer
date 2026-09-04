@@ -23,6 +23,11 @@ public static class RoslynMcpServiceCollectionExtensions
         }
 
         services.AddSingleton<SolutionManager>();
+
+        // Registered before the MCP transport hosted service (AddMcpServer below): the configured
+        // workspace load starts in the background as early as possible after host start.
+        services.AddHostedService<WorkspacePrewarmService>();
+
         foreach (var toolType in McpToolRegistry.ToolTypes)
         {
             services.AddSingleton(toolType);
