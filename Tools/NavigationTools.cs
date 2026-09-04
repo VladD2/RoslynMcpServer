@@ -1,12 +1,12 @@
 using System.ComponentModel;
 using System.Text;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.Text;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+using RoslynMcpServer.Config;
 using RoslynMcpServer.Diagnostics;
 using RoslynMcpServer.Services;
 
@@ -14,19 +14,16 @@ namespace RoslynMcpServer.Tools;
 
 public sealed class NavigationTools
 {
-    private const int MaxReferences = 20;
-    private const int MaxDefinitionLocations = 200;
-    private const int MaxFindUsagesReferences = 30;
     private const int MaxFindUsagesSourceLineChars = 400;
-    private const int MaxAmbiguousCandidatesListed = 10;
-    private const int MaxImplementations = 50;
 
     private readonly SolutionManager _solutionManager;
+    private readonly WorkspaceConfig _workspaceConfig;
     private readonly ILogger<NavigationTools> _logger;
 
-    public NavigationTools(SolutionManager solutionManager, ILogger<NavigationTools> logger)
+    public NavigationTools(SolutionManager solutionManager, WorkspaceConfig workspaceConfig, ILogger<NavigationTools> logger)
     {
         _solutionManager = solutionManager;
+        _workspaceConfig = workspaceConfig;
         _logger = logger;
     }
 
@@ -34,13 +31,27 @@ public sealed class NavigationTools
     [Description(
         "Finds all semantic references to a class, interface, or method when you know the declaring `.cs` file "
         + "(file-scoped SymbolFinder). For solution-wide search by simple name use `find_usages`. "
-        + "Output capped at 20 references. CRITICAL for safe refactoring and DI registration audits. Requires `load_workspace`. "
-        + "Applies **saved** `.cs` from disk first (IDE/git/`dotnet format`); unsaved editor buffers are ignored.")]
+        + "Returns **1-based line:column** for each reference, grouped by file. "
+        + "Pass 1-based `line`/`column` (on the declaration *or* a usage) to select the exact symbol — `symbolName` is then ignored. "
+        + "Without a position, `symbolName` is matched against declarations in the file (class/interface/method/property/field/event/constructor); "
+        + "if several declarations share the name, an error lists the candidates (FQN + line:col) — no blind first match. "
+        + "CRITICAL for safe refactoring and DI registration audits. "
+        + "Applies **saved** `.cs` from disk first (IDE/git/`dotnet format`); unsaved editor buffers are ignored. "
+        + "By default: positions only (file:line:col), no line text; pass `preview=true` when you need the source line text. "
+        + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> FindSymbolReferences(
-        [Description("Path to a .cs file (same JSON key `filePath` as get_file_content / get_diagnostics_for_file).")]
+        [Description("Path to a .cs file (same JSON key `filePath` as get_diagnostics_for_file).")]
         string filePath,
-        [Description("Symbol name (class/interface/method)")]
-        string symbolName,
+        [Description("Symbol name (class/interface/method/property/field/event/constructor). Ignored when `line`/`column` are provided.")]
+        string? symbolName = null,
+        [Description("1-based line of the symbol (declaration or usage); must be provided together with `column`.")]
+        int? line = null,
+        [Description("1-based column of the symbol (declaration or usage); must be provided together with `line`.")]
+        int? column = null,
+        [Description("Cap on the number of reference positions (argument > config `max-results` > default 50). When exceeded, the full result is written to a temp file.")]
+        int? maxResults = null,
+        [Description("When true, include the trimmed source line text at each reference.")]
+        bool? preview = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -50,9 +61,20 @@ public sealed class NavigationTools
                 return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), "Error: `filePath` is empty.");
             }
 
-            if (string.IsNullOrWhiteSpace(symbolName))
+            var hasLine = line.HasValue;
+            var hasColumn = column.HasValue;
+            if (hasLine != hasColumn)
             {
-                return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), "Symbol name is empty.");
+                return ToolTelemetry.TraceAndReturn(
+                    nameof(FindSymbolReferences),
+                    "Error: `line` and `column` must be provided together (both 1-based).");
+            }
+
+            if (!hasLine && string.IsNullOrWhiteSpace(symbolName))
+            {
+                return ToolTelemetry.TraceAndReturn(
+                    nameof(FindSymbolReferences),
+                    "Error: provide `symbolName`, or both 1-based `line` and `column`.");
             }
 
             var fullPath = _solutionManager.ResolvePathAgainstWorkspace(filePath);
@@ -74,76 +96,104 @@ public sealed class NavigationTools
                     $"Could not build semantic model for file: `{fullPath}`.");
             }
 
-            var declaration = FindMatchingDeclaration(syntaxRoot, symbolName);
-            if (declaration is null)
+            var nameForOutput = (symbolName ?? string.Empty).Trim();
+            ISymbol symbol;
+            if (hasLine)
             {
-                return ToolTelemetry.TraceAndReturn(
-                    nameof(FindSymbolReferences),
-                    $"Symbol `{symbolName}` was not found as a class/interface/method declaration in `{fullPath}`.");
-            }
+                var text = await document.GetTextAsync(cancellationToken);
+                var (offset, positionError) = SourcePositionHelper.ToOffset(text, line!.Value, column!.Value);
+                if (positionError is not null)
+                {
+                    return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), $"Error: {positionError}");
+                }
 
-            var symbol = semanticModel.GetDeclaredSymbol(declaration, cancellationToken);
-            if (symbol is null)
+                var resolvedSymbol = SourcePositionHelper.GetSymbolAtPosition(syntaxRoot, semanticModel, offset, cancellationToken);
+                if (resolvedSymbol is null)
+                {
+                    return ToolTelemetry.TraceAndReturn(
+                        nameof(FindSymbolReferences),
+                        $"No symbol found at line {line!.Value}, column {column!.Value} in `{fullPath}`.");
+                }
+
+                symbol = resolvedSymbol;
+
+                nameForOutput = symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+            }
+            else
             {
-                return ToolTelemetry.TraceAndReturn(
-                    nameof(FindSymbolReferences),
-                    $"Unable to resolve declared symbol for `{symbolName}` in `{fullPath}`.");
+                var matches = FindDeclarationMatches(syntaxRoot, nameForOutput);
+                if (matches.Count == 0)
+                {
+                    return ToolTelemetry.TraceAndReturn(
+                        nameof(FindSymbolReferences),
+                        $"Symbol `{nameForOutput}` was not found as a declaration in `{fullPath}`.");
+                }
+
+                if (matches.Count > 1)
+                {
+                    return ToolTelemetry.TraceAndReturn(
+                        nameof(FindSymbolReferences),
+                        BuildAmbiguousDeclarationsMessage(
+                            nameForOutput, fullPath, matches, semanticModel, cancellationToken));
+                }
+
+                var (declaration, variable) = matches[0];
+                var resolvedSymbol = semanticModel.GetDeclaredSymbol(variable ?? declaration, cancellationToken);
+                if (resolvedSymbol is null)
+                {
+                    return ToolTelemetry.TraceAndReturn(
+                        nameof(FindSymbolReferences),
+                        $"Unable to resolve declared symbol for `{nameForOutput}` in `{fullPath}`.");
+                }
+
+                symbol = resolvedSymbol;
             }
 
             var references = await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken);
             var locations = references
                 .SelectMany(r => r.Locations)
                 .Where(l => l.Location.IsInSource)
+                .OrderBy(l => l.Document.FilePath ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(l => l.Location.GetLineSpan().StartLinePosition.Line)
+                .ThenBy(l => l.Location.SourceSpan.Start)
                 .ToList();
 
             if (locations.Count == 0)
             {
-                return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), $"No usages found for `{symbolName}`.");
+                return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), $"No usages found for `{nameForOutput}`.");
             }
 
-            var truncated = locations.Count > MaxReferences;
-            var limited = locations.Take(MaxReferences).ToList();
+            var showPreview = ResolvePreview(preview);
+            var cap = ResolveMaxResults(maxResults);
+            var docByPath = BuildDocumentByPathMap(solution);
+            var textByDocument = new Dictionary<DocumentId, SourceText>();
 
             var sb = new StringBuilder();
-            sb.AppendLine($"Found {limited.Count} usages for '{symbolName}':");
+            sb.AppendLine($"## References for `{nameForOutput}` (identifier length: {nameForOutput.Length})");
+            sb.AppendLine();
+            sb.AppendLine($"Found **{locations.Count}** reference location(s).");
             sb.AppendLine();
 
-            foreach (var docGroup in limited.GroupBy(l => l.Document.Id))
+            foreach (var docGroup in locations.GroupBy(l => l.Document.FilePath ?? "(unknown file)", StringComparer.OrdinalIgnoreCase))
             {
-                var refDoc = solution.GetDocument(docGroup.Key);
-                var docPath = refDoc?.FilePath ?? "(unknown file)";
-                sb.AppendLine($"File: {docPath}");
+                sb.AppendLine($"File: {docGroup.Key}");
+                sb.AppendLine();
 
-                if (refDoc is null)
+                foreach (var refLoc in docGroup)
                 {
-                    sb.AppendLine("- Inside: (document unavailable)");
-                    sb.AppendLine();
-                    continue;
-                }
-
-                var root = await refDoc.GetSyntaxRootAsync(cancellationToken);
-                if (root is null)
-                {
-                    sb.AppendLine("- Inside: (syntax tree unavailable)");
-                    sb.AppendLine();
-                    continue;
-                }
-
-                foreach (var location in docGroup)
-                {
-                    var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                    sb.AppendLine($"- Inside: {GetEnclosingContext(node)}");
+                    await AppendReferencePositionAsync(
+                        sb, refLoc.Location, showPreview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
                 }
 
                 sb.AppendLine();
             }
 
-            if (truncated)
-            {
-                sb.AppendLine("[!] More than 20 usages found. Truncated to protect LLM context.");
-            }
+            var fullMarkdown = sb.ToString().TrimEnd();
+            var summary = BuildFileListSummary(locations.Select(l => l.Document.FilePath));
 
-            return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), sb.ToString().TrimEnd());
+            return ToolTelemetry.TraceAndReturn(
+                nameof(FindSymbolReferences),
+                SearchOverflowHelper.CapOrWriteToTempFile(locations.Count, cap, fullMarkdown, summary));
         }
         catch (Exception ex)
         {
@@ -159,19 +209,23 @@ public sealed class NavigationTools
 
     [McpServerTool(Name = "find_symbol_definition", Title = "Find symbol definitions in workspace")]
     [Description(
-        "Searches the **currently loaded Roslyn solution** (semantic workspace index) for declarations whose name matches `symbolName`. "
+        "Searches the **currently loaded Roslyn solution** (semantic workspace index) for declarations whose name matches `symbolName` (case-insensitive). "
         + "Before search, **saved** `.cs` on disk (IDE save, git, `dotnet format`) are merged into that index; unsaved editor buffers are not. "
-        + "Do not call `reset_workspace` for ordinary source saves — only after `dotnet build` generated files under `obj`, or `.csproj`/`.sln` graph changes. "
-        + "For each match it returns the symbol display string, every **source** definition file path, and the **1-based** starting line number. "
+        + "For each match it returns the symbol display string, the **fully-qualified name (FQN)**, every **source** definition file path, and the **1-based** starting line and column. "
+        + "A `symbolName` containing `.` is treated as a **fully-qualified name (exact match)**; if it matches no declaration, the error lists the candidate FQNs (no fallback to the simple name). "
         + "Use this when you need to know **where a C# type or member is defined** (class, interface, struct, enum, method, property, etc.). "
         + "**Do not** answer “where is it **declared**?” with plain-text search or by running grep/findstr/Select-String from a terminal over the tree—those walk `bin/`, `obj/`, and generated trees, are easy to mis-read, and can trigger access violations or lock contention. "
         + "For arbitrary text search across files, use your environment’s built-in **`grep`** tool (not `bash`/`PowerShell` pipelines). "
-        + "Call `load_workspace` first so the solution is loaded; then call this tool with the exact identifier text (matching is case-insensitive). "
-        + "Do not invent generic tool names like `search` for this task. "
-        + "For finding *usages*, use `find_usages` (solution-wide by simple name) or `find_symbol_references` when you already know the declaring `.cs` file.")]
+        + "By default: positions only (file:line:col), no line text; pass `preview=true` when you need the source line text. "
+        + "For finding *usages*, use `find_usages` (solution-wide by simple name) or `find_symbol_references` when you already know the declaring `.cs` file. "
+        + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> FindSymbolDefinition(
         [Description("Exact identifier of the type or member to locate (e.g. `IRunAvpCommand`).")]
         string symbolName,
+        [Description("Cap on the number of source locations (argument > config `max-results` > default 50). When exceeded, the full result is written to a temp file.")]
+        int? maxResults = null,
+        [Description("When true, include the trimmed source line text at each location.")]
+        bool? preview = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -191,25 +245,15 @@ public sealed class NavigationTools
             }
 
             var trimmedName = symbolName.Trim();
-            var declarations = new List<ISymbol>();
-            foreach (var projectId in solution.ProjectIds)
+            var (symbols, fqnError) = await ResolveDeclarationsAsync(
+                solution, trimmedName, SymbolFilter.Type | SymbolFilter.Member, cancellationToken).ConfigureAwait(false);
+            if (fqnError is not null)
             {
-                var project = solution.GetProject(projectId);
-                if (project is null)
-                {
-                    continue;
-                }
-
-                var found = await SymbolFinder.FindDeclarationsAsync(
-                    project,
-                    trimmedName,
-                    ignoreCase: true,
-                    SymbolFilter.Type | SymbolFilter.Member,
-                    cancellationToken).ConfigureAwait(false);
-                declarations.AddRange(found);
+                return ToolTelemetry.TraceAndReturn(
+                    nameof(FindSymbolDefinition),
+                    _solutionManager.WithDiskSyncNotes(fqnError));
             }
 
-            var symbols = declarations.Distinct(SymbolEqualityComparer.Default).ToList();
             if (symbols.Count == 0)
             {
                 return ToolTelemetry.TraceAndReturn(
@@ -218,47 +262,60 @@ public sealed class NavigationTools
                         $"Symbol `{trimmedName}` was not found in the current solution (no matching type or member declarations)."));
             }
 
-            var sb = new StringBuilder();
-            sb.AppendLine($"Found {symbols.Count} declaration symbol(s) matching `{trimmedName}`:");
-            sb.AppendLine();
+            var showPreview = ResolvePreview(preview);
+            var cap = ResolveMaxResults(maxResults);
 
-            var emitted = 0;
+            // Collect every in-source location (element count for the cap); remember symbols with none.
+            var entries = new List<(ISymbol Symbol, Location Location)>();
+            var symbolsWithoutLocations = new List<ISymbol>();
             foreach (var symbol in symbols)
             {
-                var display = symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                var sourceLocations = symbol.Locations.Where(l => l.IsInSource && l.SourceTree?.FilePath is not null).ToList();
+                var sourceLocations = symbol.Locations
+                    .Where(l => l.IsInSource && l.SourceTree?.FilePath is not null)
+                    .ToList();
                 if (sourceLocations.Count == 0)
                 {
-                    sb.AppendLine($"Symbol: {display}");
-                    sb.AppendLine("  (no in-source locations — metadata or implicit declaration only)");
-                    sb.AppendLine();
+                    symbolsWithoutLocations.Add(symbol);
                     continue;
                 }
 
                 foreach (var location in sourceLocations)
                 {
-                    if (emitted >= MaxDefinitionLocations)
-                    {
-                        sb.AppendLine(
-                            $"[!] Output truncated after {MaxDefinitionLocations} source location(s). Narrow the symbol name or use `find_symbol_references` from a known file.");
-                        return ToolTelemetry.TraceAndReturn(
-                            nameof(FindSymbolDefinition),
-                            _solutionManager.WithDiskSyncNotes(sb.ToString().TrimEnd()));
-                    }
-
-                    var path = location.SourceTree!.FilePath!;
-                    var line = location.GetLineSpan().StartLinePosition.Line + 1;
-                    sb.AppendLine($"Symbol: {display}");
-                    sb.AppendLine($"  File: {path}");
-                    sb.AppendLine($"  Line: {line}");
-                    sb.AppendLine();
-                    emitted++;
+                    entries.Add((symbol, location));
                 }
             }
 
+            var totalLocations = entries.Count;
+            var docByPath = BuildDocumentByPathMap(solution);
+            var textByDocument = new Dictionary<DocumentId, SourceText>();
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"## Definitions for `{trimmedName}` (identifier length: {trimmedName.Length})");
+            sb.AppendLine();
+            sb.AppendLine($"Found **{symbols.Count}** symbol(s), **{totalLocations}** source location(s).");
+            sb.AppendLine();
+
+            foreach (var (symbol, location) in entries)
+            {
+                await AppendDefinitionEntryAsync(
+                    sb, symbol, location, showPreview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var symbol in symbolsWithoutLocations)
+            {
+                sb.AppendLine($"Symbol: {symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}");
+                sb.AppendLine($"FQN: {GetSymbolFqn(symbol)}");
+                sb.AppendLine("  (no in-source locations — metadata or implicit declaration only)");
+                sb.AppendLine();
+            }
+
+            var fullMarkdown = sb.ToString().TrimEnd();
+            var summary = BuildFqnListSummary(symbols);
+
             return ToolTelemetry.TraceAndReturn(
                 nameof(FindSymbolDefinition),
-                _solutionManager.WithDiskSyncNotes(sb.ToString().TrimEnd()));
+                _solutionManager.WithDiskSyncNotes(
+                    SearchOverflowHelper.CapOrWriteToTempFile(totalLocations, cap, fullMarkdown, summary)));
         }
         catch (Exception ex)
         {
@@ -273,16 +330,21 @@ public sealed class NavigationTools
 
     [McpServerTool(Name = "find_usages", Title = "Find symbol usages across solution")]
     [Description(
-        "Semantically searches the **entire loaded Roslyn solution** for references and invocations of a symbol whose declared name matches `symbolName` (case-insensitive). "
-        + "Applies **saved** `.cs` from disk first; unsaved editor buffers are ignored (no `reset_workspace` for ordinary saves). "
-        + "Returns grouped **file paths**, **1-based line numbers**, and the **actual source line text** at each reference. "
-        + "Use this to learn usage patterns for classes, methods, properties, etc. Call `load_workspace` first. "
-        + "If several declarations share the same simple name, the tool picks a single primary symbol (types preferred over methods/properties, then stable ordering by fully-qualified name); "
-        + "narrow `symbolName` or use `find_symbol_definition` / `find_symbol_references` with a known file when needed. "
-        + "Output is capped at 30 references to limit token use.")]
+        "Semantically searches the **entire loaded Roslyn solution** for references and invocations of every symbol whose declared name matches `symbolName` (case-insensitive). "
+        + "Applies **saved** `.cs` from disk first; unsaved editor buffers are ignored. "
+        + "Returns **1-based line:column** for each reference, grouped by file. "
+        + "If several declarations share the same simple name, all of them are reported (a summary table groups references by fully-qualified name); "
+        + "narrow `symbolName` (or pass an FQN) to disambiguate, or use `find_symbol_definition` / `find_symbol_references` with a known file. "
+        + "A `symbolName` containing `.` is treated as a **fully-qualified name (exact match)**; if it matches no declaration, the error lists the candidate FQNs (no fallback to the simple name). "
+        + "By default: positions only (file:line:col), no line text; pass `preview=true` when you need the source line text. "
+        + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> FindUsages(
         [Description("Declared name of the type or member whose references to find (e.g. `Guard`, `JsonExtensions`, `Format`).")]
         string symbolName,
+        [Description("Cap on the total number of reference positions (argument > config `max-results` > default 50). When exceeded, the full result is written to a temp file.")]
+        int? maxResults = null,
+        [Description("When true, include the trimmed source line text at each reference.")]
+        bool? preview = null,
         CancellationToken cancellationToken = default)
     {
         const string toolName = nameof(FindUsages);
@@ -304,25 +366,15 @@ public sealed class NavigationTools
             }
 
             var trimmedName = symbolName.Trim();
-            var declarations = new List<ISymbol>();
-            foreach (var projectId in solution.ProjectIds)
+            var (symbols, fqnError) = await ResolveDeclarationsAsync(
+                solution, trimmedName, SymbolFilter.Type | SymbolFilter.Member, cancellationToken).ConfigureAwait(false);
+            if (fqnError is not null)
             {
-                var project = solution.GetProject(projectId);
-                if (project is null)
-                {
-                    continue;
-                }
-
-                var found = await SymbolFinder.FindDeclarationsAsync(
-                    project,
-                    trimmedName,
-                    ignoreCase: true,
-                    SymbolFilter.Type | SymbolFilter.Member,
-                    cancellationToken).ConfigureAwait(false);
-                declarations.AddRange(found);
+                return ToolTelemetry.TraceAndReturn(
+                    toolName,
+                    _solutionManager.WithDiskSyncNotes(fqnError));
             }
 
-            var symbols = declarations.Distinct(SymbolEqualityComparer.Default).ToList();
             if (symbols.Count == 0)
             {
                 return ToolTelemetry.TraceAndReturn(
@@ -331,90 +383,98 @@ public sealed class NavigationTools
                         $"No declarations named `{trimmedName}` were found in the current solution."));
             }
 
-            var targetSymbol = PickPrimarySymbol(symbols);
-            var chosenDisplay = targetSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-            var chosenFqn = targetSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            var showPreview = ResolvePreview(preview);
+            var cap = ResolveMaxResults(maxResults);
 
-            var references = await SymbolFinder.FindReferencesAsync(targetSymbol, solution, cancellationToken)
-                .ConfigureAwait(false);
+            // Find references for every matching declaration (no blind "primary" pick).
+            var perSymbol = new List<(ISymbol Symbol, List<ReferenceLocation> Locations)>();
+            foreach (var symbol in symbols)
+            {
+                var references = await SymbolFinder.FindReferencesAsync(symbol, solution, cancellationToken)
+                    .ConfigureAwait(false);
+                var locations = references
+                    .SelectMany(r => r.Locations)
+                    .Where(l => l.Location.IsInSource && l.Document.FilePath is not null)
+                    .OrderBy(l => l.Document.FilePath, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(l => l.Location.GetLineSpan().StartLinePosition.Line)
+                    .ThenBy(l => l.Location.SourceSpan.Start)
+                    .ToList();
+                perSymbol.Add((symbol, locations));
+            }
 
-            var refLocations = references
-                .SelectMany(r => r.Locations)
-                .Where(l => l.Location.IsInSource && l.Document.FilePath is not null)
-                .OrderBy(l => l.Document.FilePath, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(l => l.Location.GetLineSpan().StartLinePosition.Line)
-                .ThenBy(l => l.Location.SourceSpan.Start)
-                .ToList();
-
-            var totalFound = refLocations.Count;
-            var truncated = totalFound > MaxFindUsagesReferences;
-            var limited = refLocations.Take(MaxFindUsagesReferences).ToList();
+            var totalPositions = perSymbol.Sum(p => p.Locations.Count);
+            var docByPath = BuildDocumentByPathMap(solution);
+            var textByDocument = new Dictionary<DocumentId, SourceText>();
 
             var sb = new StringBuilder();
-            sb.AppendLine($"## Usages for `{trimmedName}`");
-            sb.AppendLine();
-            sb.AppendLine($"**Primary symbol:** `{chosenDisplay}`");
-            sb.AppendLine($"`{chosenFqn}`");
+            sb.AppendLine($"## Usages for `{trimmedName}` (identifier length: {trimmedName.Length})");
             sb.AppendLine();
 
-            if (symbols.Count > 1)
+            string summary;
+            if (perSymbol.Count == 1)
             {
-                sb.AppendLine(
-                    $"[!] {symbols.Count} declarations match this name; references are for the primary symbol above. Other candidates:");
-                foreach (var s in symbols
-                             .Where(s => !SymbolEqualityComparer.Default.Equals(s, targetSymbol))
-                             .OrderBy(s => s.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), StringComparer.Ordinal)
-                             .Take(MaxAmbiguousCandidatesListed))
+                var (symbol, locations) = perSymbol[0];
+                sb.AppendLine($"**Symbol:** `{symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}`");
+                sb.AppendLine($"`{GetSymbolFqn(symbol)}`");
+                sb.AppendLine();
+
+                if (locations.Count == 0)
                 {
-                    sb.AppendLine($"  - {s.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}");
+                    sb.AppendLine("No in-source references were returned for this symbol.");
+                }
+                else
+                {
+                    sb.AppendLine($"Found **{locations.Count}** reference location(s).");
+                    sb.AppendLine();
+                    await AppendPositionGroupsAsync(
+                        sb, locations, showPreview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
                 }
 
-                if (symbols.Count - 1 > MaxAmbiguousCandidatesListed)
+                summary = BuildFileListSummary(locations.Select(l => l.Document.FilePath));
+            }
+            else
+            {
+                var ordered = perSymbol
+                    .OrderBy(p => GetSymbolFqn(p.Symbol), StringComparer.Ordinal)
+                    .ToList();
+
+                sb.AppendLine($"{ordered.Count} declaration(s) match this name:");
+                sb.AppendLine();
+                sb.AppendLine("| FQN | References |");
+                sb.AppendLine("| --- | --- |");
+                foreach (var (symbol, locations) in ordered)
                 {
-                    sb.AppendLine($"  … and {symbols.Count - 1 - MaxAmbiguousCandidatesListed} more.");
+                    sb.AppendLine($"| {GetSymbolFqn(symbol)} | {locations.Count} |");
                 }
 
                 sb.AppendLine();
-            }
-
-            if (limited.Count == 0)
-            {
-                sb.AppendLine("No in-source references were returned for this symbol.");
-                return ToolTelemetry.TraceAndReturn(toolName, _solutionManager.WithDiskSyncNotes(sb.ToString().TrimEnd()));
-            }
-
-            sb.AppendLine(
-                $"Showing **{limited.Count}** reference location(s)" +
-                (truncated ? $" of **{totalFound}** total (capped at {MaxFindUsagesReferences})." : "."));
-            sb.AppendLine();
-
-            var textByDocument = new Dictionary<DocumentId, SourceText>();
-            foreach (var group in limited.GroupBy(l => l.Document.FilePath!, StringComparer.OrdinalIgnoreCase))
-            {
-                sb.AppendLine($"### `{group.Key}`");
-                sb.AppendLine();
-                foreach (var refLoc in group)
+                foreach (var (symbol, locations) in ordered)
                 {
-                    var line1Based = refLoc.Location.GetLineSpan().StartLinePosition.Line + 1;
-                    var lineText = await GetReferenceSourceLineAsync(refLoc, textByDocument, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (string.IsNullOrEmpty(lineText))
+                    sb.AppendLine($"### `{GetSymbolFqn(symbol)}`");
+                    sb.AppendLine();
+                    if (locations.Count == 0)
                     {
-                        lineText = "(source line unavailable)";
+                        sb.AppendLine("(no in-source references)");
+                        sb.AppendLine();
                     }
-
-                    sb.AppendLine($"- **Line {line1Based}:** `{EscapeMdBackticks(lineText)}`");
+                    else
+                    {
+                        await AppendPositionGroupsAsync(
+                            sb, locations, showPreview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
+                    }
                 }
 
-                sb.AppendLine();
+                summary = string.Join(
+                    Environment.NewLine,
+                    ordered.Select(p => $"- {GetSymbolFqn(p.Symbol)}: {p.Locations.Count}"));
             }
 
-            if (truncated)
-            {
-                sb.AppendLine($"[!] Truncated to {MaxFindUsagesReferences} references; narrow `symbolName` or use `find_symbol_references` from a declaring file.");
-            }
+            var fullMarkdown = sb.ToString().TrimEnd();
 
-            return ToolTelemetry.TraceAndReturn(toolName, _solutionManager.WithDiskSyncNotes(sb.ToString().TrimEnd()));
+            return ToolTelemetry.TraceAndReturn(
+                toolName,
+                _solutionManager.WithDiskSyncNotes(
+                    SearchOverflowHelper.CapOrWriteToTempFile(totalPositions, cap, fullMarkdown, summary)));
         }
         catch (OperationCanceledException)
         {
@@ -437,13 +497,20 @@ public sealed class NavigationTools
         + "Applies **saved** `.cs` from disk first; unsaved editor buffers are ignored. "
         + "Use for questions like \"which classes implement `IRepository`?\" or \"what inherits from `BaseController`?\". "
         + "Do not use text search or `find_usages` for this — they miss indirect hierarchies and match unrelated identifiers. "
-        + "Call `load_workspace` first. For interface symbols uses Roslyn FindImplementations; for classes/structs uses FindDerivedClasses. "
-        + "Output is capped at 50 types.")]
+        + "For interface symbols uses Roslyn FindImplementations; for classes/structs uses FindDerivedClasses. "
+        + "A `symbolName` containing `.` is treated as a **fully-qualified name (exact match)**; if it matches no declaration, the error lists the candidate FQNs (no fallback to the simple name). "
+        + "Each result is reported as `path:line:col`. "
+        + "By default: positions only (path:line:col), no line text; pass `preview=true` when you need the source line text. "
+        + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> FindImplementations(
         [Description("Name of the interface or base class (e.g. `IRepository`, `BaseController`). Case-insensitive.")]
         string symbolName,
         [Description("When true (default), includes indirect implementations / derived types (transitive hierarchy).")]
         bool transitive = true,
+        [Description("Cap on the total number of found types (argument > config `max-results` > default 50). When exceeded, the full result is written to a temp file.")]
+        int? maxResults = null,
+        [Description("When true, include the trimmed source line text at each type location.")]
+        bool? preview = null,
         CancellationToken cancellationToken = default)
     {
         const string toolName = nameof(FindImplementations);
@@ -465,7 +532,18 @@ public sealed class NavigationTools
             }
 
             var trimmedName = symbolName.Trim();
-            var typeSymbols = await FindNamedTypeDeclarationsAsync(solution, trimmedName, cancellationToken);
+            var (symbolMatches, fqnError) = await ResolveDeclarationsAsync(
+                solution, trimmedName, SymbolFilter.Type, cancellationToken).ConfigureAwait(false);
+            if (fqnError is not null)
+            {
+                return ToolTelemetry.TraceAndReturn(toolName, fqnError);
+            }
+
+            var typeSymbols = symbolMatches
+                .OfType<INamedTypeSymbol>()
+                .Distinct(SymbolEqualityComparer.Default)
+                .Cast<INamedTypeSymbol>()
+                .ToList();
             if (typeSymbols.Count == 0)
             {
                 return ToolTelemetry.TraceAndReturn(
@@ -473,103 +551,119 @@ public sealed class NavigationTools
                     $"No type declaration named `{trimmedName}` was found in the current solution.");
             }
 
-            var targetType = PickPrimaryTypeSymbol(typeSymbols);
-            var kindLabel = GetTypeKindLabel(targetType);
-            var chosenDisplay = targetType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-            var chosenFqn = targetType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            var showPreview = ResolvePreview(preview);
+            var cap = ResolveMaxResults(maxResults);
 
-            IEnumerable<INamedTypeSymbol> relatedTypes;
-            string searchMode;
-            switch (targetType.TypeKind)
+            // Find implementations/derived types for every matching base type (no blind "primary" pick).
+            var perBase = new List<(INamedTypeSymbol Base, List<INamedTypeSymbol> Types, string SearchMode)>();
+            foreach (var baseType in typeSymbols)
             {
-                case TypeKind.Interface:
-                    relatedTypes = await SymbolFinder.FindImplementationsAsync(
-                        targetType, solution, transitive, projects: null, cancellationToken).ConfigureAwait(false);
-                    searchMode = transitive ? "implementations (transitive)" : "direct implementations";
-                    break;
-                case TypeKind.Class:
-                case TypeKind.Struct:
-                    relatedTypes = await SymbolFinder.FindDerivedClassesAsync(
-                        targetType, solution, transitive, projects: null, cancellationToken).ConfigureAwait(false);
-                    searchMode = transitive ? "derived types (transitive)" : "direct derived types";
-                    break;
-                default:
-                    return ToolTelemetry.TraceAndReturn(
-                        toolName,
-                        $"Symbol `{trimmedName}` is a {targetType.TypeKind}; only interfaces, classes, and structs are supported.");
+                List<INamedTypeSymbol> related;
+                string searchMode;
+                switch (baseType.TypeKind)
+                {
+                    case TypeKind.Interface:
+                        related = (await SymbolFinder.FindImplementationsAsync(
+                                      baseType, solution, transitive, projects: null, cancellationToken).ConfigureAwait(false))
+                            .Distinct(SymbolEqualityComparer.Default)
+                            .Cast<INamedTypeSymbol>()
+                            .OrderBy(t => GetSymbolFqn(t), StringComparer.Ordinal)
+                            .ToList();
+                        searchMode = transitive ? "implementations (transitive)" : "direct implementations";
+                        break;
+                    case TypeKind.Class:
+                    case TypeKind.Struct:
+                        related = (await SymbolFinder.FindDerivedClassesAsync(
+                                      baseType, solution, transitive, projects: null, cancellationToken).ConfigureAwait(false))
+                            .Distinct(SymbolEqualityComparer.Default)
+                            .Cast<INamedTypeSymbol>()
+                            .OrderBy(t => GetSymbolFqn(t), StringComparer.Ordinal)
+                            .ToList();
+                        searchMode = transitive ? "derived types (transitive)" : "direct derived types";
+                        break;
+                    default:
+                        return ToolTelemetry.TraceAndReturn(
+                            toolName,
+                            $"Symbol `{trimmedName}` is a {baseType.TypeKind}; only interfaces, classes, and structs are supported.");
+                }
+
+                perBase.Add((baseType, related, searchMode));
             }
 
-            var results = relatedTypes
-                .Distinct(SymbolEqualityComparer.Default)
-                .Cast<INamedTypeSymbol>()
-                .OrderBy(t => t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), StringComparer.Ordinal)
-                .ToList();
+            var totalTypes = perBase.Sum(p => p.Types.Count);
+            var docByPath = BuildDocumentByPathMap(solution);
+            var textByDocument = new Dictionary<DocumentId, SourceText>();
 
             var sb = new StringBuilder();
-            sb.AppendLine($"## {searchMode} for `{trimmedName}`");
-            sb.AppendLine();
-            sb.AppendLine($"**Base symbol:** `{chosenDisplay}` ({kindLabel})");
-            sb.AppendLine($"`{chosenFqn}`");
+            var headerModes = perBase.Select(p => p.SearchMode).Distinct().ToList();
+            var headerMode = headerModes.Count == 1 ? headerModes[0] : "implementations / derived types";
+            sb.AppendLine($"## {headerMode} for `{trimmedName}` (identifier length: {trimmedName.Length})");
             sb.AppendLine();
 
-            if (typeSymbols.Count > 1)
+            string summary;
+            if (perBase.Count == 1)
             {
-                sb.AppendLine(
-                    $"[!] {typeSymbols.Count} type declarations match this name; results are for the primary symbol above. Other candidates:");
-                foreach (var candidate in typeSymbols
-                             .Where(t => !SymbolEqualityComparer.Default.Equals(t, targetType))
-                             .OrderBy(t => t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), StringComparer.Ordinal)
-                             .Take(MaxAmbiguousCandidatesListed))
+                var (baseType, types, searchMode) = perBase[0];
+                sb.AppendLine($"**Base symbol:** `{baseType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}` ({GetTypeKindLabel(baseType)})");
+                sb.AppendLine($"`{GetSymbolFqn(baseType)}`");
+                sb.AppendLine();
+                sb.AppendLine($"Found **{types.Count}** type(s) ({searchMode}).");
+                sb.AppendLine();
+
+                var index = 1;
+                foreach (var type in types)
                 {
-                    sb.AppendLine($"  - {candidate.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}");
+                    await AppendImplementationEntryAsync(
+                        sb, index, type, showPreview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
+                    index++;
                 }
 
-                if (typeSymbols.Count - 1 > MaxAmbiguousCandidatesListed)
+                summary = BuildFileListSummary(types.Select(t => GetFirstSourceLocation(t)?.SourceTree?.FilePath));
+            }
+            else
+            {
+                var ordered = perBase
+                    .OrderBy(p => GetSymbolFqn(p.Base), StringComparer.Ordinal)
+                    .ToList();
+
+                sb.AppendLine($"{ordered.Count} base type(s) match this name:");
+                sb.AppendLine();
+                sb.AppendLine("| FQN | Kind | Types |");
+                sb.AppendLine("| --- | --- | --- |");
+                foreach (var (baseType, types, _) in ordered)
                 {
-                    sb.AppendLine($"  … and {typeSymbols.Count - 1 - MaxAmbiguousCandidatesListed} more.");
+                    sb.AppendLine($"| {GetSymbolFqn(baseType)} | {GetTypeKindLabel(baseType)} | {types.Count} |");
                 }
 
                 sb.AppendLine();
-            }
-
-            if (results.Count == 0)
-            {
-                sb.AppendLine($"No {searchMode} were found in the solution.");
-                return ToolTelemetry.TraceAndReturn(toolName, sb.ToString().TrimEnd());
-            }
-
-            var truncated = results.Count > MaxImplementations;
-            var limited = results.Take(MaxImplementations).ToList();
-
-            sb.AppendLine($"Found **{results.Count}** type(s)" + (truncated ? $" (showing first {MaxImplementations}):" : ":"));
-            sb.AppendLine();
-
-            var index = 1;
-            foreach (var type in limited)
-            {
-                var display = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                var location = type.Locations.FirstOrDefault(l => l.IsInSource && l.SourceTree?.FilePath is not null);
-                if (location is null)
+                foreach (var (baseType, types, searchMode) in ordered)
                 {
-                    sb.AppendLine($"{index}. `{display}` — (no in-source location)");
-                }
-                else
-                {
-                    var path = location.SourceTree!.FilePath!;
-                    var line = location.GetLineSpan().StartLinePosition.Line + 1;
-                    sb.AppendLine($"{index}. `{display}` — `{path}:{line}`");
+                    sb.AppendLine($"### `{GetSymbolFqn(baseType)}` ({GetTypeKindLabel(baseType)})");
+                    sb.AppendLine();
+                    if (types.Count == 0)
+                    {
+                        sb.AppendLine($"No {searchMode} were found.");
+                        sb.AppendLine();
+                        continue;
+                    }
+
+                    var index = 1;
+                    foreach (var type in types)
+                    {
+                        await AppendImplementationEntryAsync(
+                            sb, index, type, showPreview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
+                        index++;
+                    }
                 }
 
-                index++;
+                summary = string.Join(
+                    Environment.NewLine,
+                    ordered.Select(p => $"- {GetSymbolFqn(p.Base)}: {p.Types.Count}"));
             }
 
-            if (truncated)
-            {
-                sb.AppendLine();
-                sb.AppendLine($"[!] Truncated to {MaxImplementations} types. Narrow `symbolName` or use `find_symbol_definition` to disambiguate.");
-            }
-
-            return ToolTelemetry.TraceAndReturn(toolName, sb.ToString().TrimEnd());
+            return ToolTelemetry.TraceAndReturn(
+                toolName,
+                SearchOverflowHelper.CapOrWriteToTempFile(totalTypes, cap, sb.ToString().TrimEnd(), summary));
         }
         catch (OperationCanceledException)
         {
@@ -586,9 +680,33 @@ public sealed class NavigationTools
         }
     }
 
-    private static async Task<List<INamedTypeSymbol>> FindNamedTypeDeclarationsAsync(
+    private int ResolveMaxResults(int? maxResults) =>
+        SearchOverflowHelper.ResolveMaxResults(maxResults, _workspaceConfig);
+
+    private bool ResolvePreview(bool? preview) =>
+        preview ?? _workspaceConfig.Preview;
+
+    private static Dictionary<string, Document> BuildDocumentByPathMap(Solution solution)
+    {
+        var map = new Dictionary<string, Document>(StringComparer.OrdinalIgnoreCase);
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (!string.IsNullOrEmpty(document.FilePath) && !map.ContainsKey(document.FilePath))
+                {
+                    map[document.FilePath] = document;
+                }
+            }
+        }
+
+        return map;
+    }
+
+    private static async Task<List<ISymbol>> FindDeclarationsByNameAsync(
         Solution solution,
         string trimmedName,
+        SymbolFilter filter,
         CancellationToken cancellationToken)
     {
         var declarations = new List<ISymbol>();
@@ -604,25 +722,313 @@ public sealed class NavigationTools
                 project,
                 trimmedName,
                 ignoreCase: true,
-                SymbolFilter.Type,
+                filter,
                 cancellationToken).ConfigureAwait(false);
             declarations.AddRange(found);
         }
 
-        return declarations
-            .OfType<INamedTypeSymbol>()
-            .Distinct(SymbolEqualityComparer.Default)
-            .Cast<INamedTypeSymbol>()
-            .ToList();
+        return declarations;
     }
 
-    private static INamedTypeSymbol PickPrimaryTypeSymbol(IReadOnlyList<INamedTypeSymbol> types)
+    private const string GlobalNamespacePrefix = "global::";
+
+    /// <summary>
+    /// Computes the fully-qualified name used for display, grouping and FQN matching.
+    /// For types — <see cref="SymbolDisplayFormat.FullyQualifiedFormat"/> (with <c>global::</c>);
+    /// for members (method/property/field/event) — the FQN of the declaring type (recursively, including nested
+    /// types) + <c>.</c> + the member name, without signature/parameters (e.g. <c>global::Mcp.Tools.CodeBaseInfo.FastGlobGrep</c>).
+    /// In Roslyn 5.9 <see cref="SymbolDisplayFormat.FullyQualifiedFormat"/> omits the declaring type for members,
+    /// so two same-named members in different classes would produce identical FQNs.
+    /// </summary>
+    internal static string GetSymbolFqn(ISymbol symbol)
     {
-        return types
-            .OrderByDescending(t => t.TypeKind == TypeKind.Interface ? 300 : t.TypeKind == TypeKind.Class ? 200 : 100)
-            .ThenBy(t => t.IsAbstract ? 0 : 1)
-            .ThenBy(t => t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), StringComparer.Ordinal)
-            .First();
+        if (symbol is IMethodSymbol or IPropertySymbol or IFieldSymbol or IEventSymbol
+            && symbol.ContainingType is { } containingType)
+        {
+            return GetSymbolFqn(containingType) + "." + symbol.Name;
+        }
+
+        return symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+    }
+
+    /// <summary>
+    /// Strips the leading <c>global::</c> prefix so both FQN forms (with and without the prefix) compare equal.
+    /// <see cref="SymbolDisplayFormat.FullyQualifiedFormat"/> prints the prefix for top-level types, but users
+    /// typically type FQNs without it.
+    /// </summary>
+    internal static string NormalizeFqn(string fqn) =>
+        fqn.StartsWith(GlobalNamespacePrefix, StringComparison.Ordinal)
+            ? fqn[GlobalNamespacePrefix.Length..]
+            : fqn;
+
+    /// <summary>
+    /// Resolves declarations for <paramref name="requestedName"/>. A name containing a dot is treated as a
+    /// fully-qualified name (exact match): declarations are searched by the last segment (simple name) and filtered
+    /// to symbols whose <see cref="GetSymbolFqn"/> equals the requested name (Ordinal,
+    /// after stripping a leading <c>global::</c> from both sides).
+    /// When the FQN matches nothing, returns an empty list and an error listing the candidate FQNs — no silent
+    /// fallback to the simple name. Otherwise returns all declarations unchanged.
+    /// </summary>
+    internal static async Task<(List<ISymbol> Matches, string? Error)> ResolveDeclarationsAsync(
+        Solution solution,
+        string requestedName,
+        SymbolFilter filter,
+        CancellationToken cancellationToken)
+    {
+        var dotIndex = requestedName.LastIndexOf('.');
+        var searchName = dotIndex >= 0 ? requestedName[(dotIndex + 1)..] : requestedName;
+
+        var declarations = await FindDeclarationsByNameAsync(solution, searchName, filter, cancellationToken).ConfigureAwait(false);
+        var symbols = declarations.Distinct(SymbolEqualityComparer.Default).ToList();
+        if (dotIndex < 0)
+        {
+            return (symbols, null);
+        }
+
+        var normalizedRequested = NormalizeFqn(requestedName);
+        var matches = symbols
+            .Where(s => string.Equals(
+                NormalizeFqn(GetSymbolFqn(s)),
+                normalizedRequested,
+                StringComparison.Ordinal))
+            .ToList();
+        if (matches.Count > 0)
+        {
+            return (matches, null);
+        }
+
+        var candidateFqns = symbols
+            .Select(GetSymbolFqn)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(f => f, StringComparer.Ordinal);
+        var candidates = string.Join(", ", candidateFqns.Select(f => $"`{f}`"));
+        var error = candidates.Length > 0
+            ? $"FQN `{requestedName}` was not found in the current solution. "
+              + $"{symbols.Count} declaration(s) with the simple name `{searchName}`: {candidates}"
+            : $"FQN `{requestedName}` was not found in the current solution (no declarations with the simple name `{searchName}` either).";
+        return (new List<ISymbol>(), error);
+    }
+
+    private static async Task AppendPositionGroupsAsync(
+        StringBuilder sb,
+        IEnumerable<ReferenceLocation> locations,
+        bool preview,
+        IReadOnlyDictionary<string, Document> docByPath,
+        Dictionary<DocumentId, SourceText> textByDocument,
+        CancellationToken cancellationToken)
+    {
+        foreach (var group in locations.GroupBy(l => l.Document.FilePath!, StringComparer.OrdinalIgnoreCase))
+        {
+            sb.AppendLine($"### `{group.Key}`");
+            sb.AppendLine();
+            foreach (var refLoc in group)
+            {
+                await AppendReferencePositionAsync(
+                    sb, refLoc.Location, preview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
+            }
+
+            sb.AppendLine();
+        }
+    }
+
+    private static async Task AppendReferencePositionAsync(
+        StringBuilder sb,
+        Location location,
+        bool preview,
+        IReadOnlyDictionary<string, Document> docByPath,
+        Dictionary<DocumentId, SourceText> textByDocument,
+        CancellationToken cancellationToken)
+    {
+        var pos = location.GetLineSpan().StartLinePosition;
+        if (!preview)
+        {
+            sb.AppendLine($"- {pos.Line + 1}:{pos.Character + 1}");
+            return;
+        }
+
+        var text = await GetSourceLinePreviewAsync(location, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
+        sb.AppendLine($"- {pos.Line + 1}:{pos.Character + 1} `{EscapeMdBackticks(string.IsNullOrEmpty(text) ? "(source line unavailable)" : text)}`");
+    }
+
+    private static async Task AppendDefinitionEntryAsync(
+        StringBuilder sb,
+        ISymbol symbol,
+        Location location,
+        bool preview,
+        IReadOnlyDictionary<string, Document> docByPath,
+        Dictionary<DocumentId, SourceText> textByDocument,
+        CancellationToken cancellationToken)
+    {
+        var pos = location.GetLineSpan().StartLinePosition;
+        sb.AppendLine($"Symbol: {symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}");
+        sb.AppendLine($"FQN: {GetSymbolFqn(symbol)}");
+        sb.AppendLine($"  File: {location.SourceTree!.FilePath!}");
+        sb.AppendLine($"  Line: {pos.Line + 1}");
+        sb.AppendLine($"  Col: {pos.Character + 1}");
+        if (preview)
+        {
+            var text = await GetSourceLinePreviewAsync(location, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
+            sb.AppendLine($"  Source: `{EscapeMdBackticks(string.IsNullOrEmpty(text) ? "(source line unavailable)" : text)}`");
+        }
+
+        sb.AppendLine();
+    }
+
+    private static async Task AppendImplementationEntryAsync(
+        StringBuilder sb,
+        int index,
+        INamedTypeSymbol type,
+        bool preview,
+        IReadOnlyDictionary<string, Document> docByPath,
+        Dictionary<DocumentId, SourceText> textByDocument,
+        CancellationToken cancellationToken)
+    {
+        var display = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+        var location = GetFirstSourceLocation(type);
+        if (location is null)
+        {
+            sb.AppendLine($"{index}. `{display}` — (no in-source location)");
+            return;
+        }
+
+        var path = location.SourceTree!.FilePath!;
+        var pos = location.GetLineSpan().StartLinePosition;
+        if (!preview)
+        {
+            sb.AppendLine($"{index}. `{display}` — `{path}:{pos.Line + 1}:{pos.Character + 1}`");
+            return;
+        }
+
+        var text = await GetSourceLinePreviewAsync(location, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
+        sb.AppendLine(
+            $"{index}. `{display}` — `{path}:{pos.Line + 1}:{pos.Character + 1}` "
+            + $"`{EscapeMdBackticks(string.IsNullOrEmpty(text) ? "(source line unavailable)" : text)}`");
+    }
+
+    private static Location? GetFirstSourceLocation(INamedTypeSymbol type) =>
+        type.Locations.FirstOrDefault(l => l.IsInSource && l.SourceTree?.FilePath is not null);
+
+    private static async Task<string> GetSourceLinePreviewAsync(
+        Location location,
+        IReadOnlyDictionary<string, Document> docByPath,
+        Dictionary<DocumentId, SourceText> textByDocument,
+        CancellationToken cancellationToken)
+    {
+        if (location.SourceTree?.FilePath is not { } path || !docByPath.TryGetValue(path, out var document))
+        {
+            return string.Empty;
+        }
+
+        if (!textByDocument.TryGetValue(document.Id, out var text))
+        {
+            text = await document.GetTextAsync(cancellationToken).ConfigureAwait(false);
+            textByDocument[document.Id] = text;
+        }
+
+        var lineIndex = location.GetLineSpan().StartLinePosition.Line;
+        if (lineIndex < 0 || lineIndex >= text.Lines.Count)
+        {
+            return string.Empty;
+        }
+
+        return TruncateLine(text.Lines[lineIndex].ToString().Trim());
+    }
+
+    private static string TruncateLine(string raw)
+    {
+        return raw.Length > MaxFindUsagesSourceLineChars ? raw[..MaxFindUsagesSourceLineChars] + "…" : raw;
+    }
+
+    private static string BuildFileListSummary(IEnumerable<string?> files)
+    {
+        var distinct = files
+            .Where(f => !string.IsNullOrWhiteSpace(f))
+            .Select(f => f!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (distinct.Count == 0)
+        {
+            return "(no in-source locations)";
+        }
+
+        return string.Join(Environment.NewLine, distinct.Select(f => $"- `{f}`"));
+    }
+
+    private static string BuildFqnListSummary(IEnumerable<ISymbol> symbols) =>
+        string.Join(
+            Environment.NewLine,
+            symbols.Select(s => $"- {GetSymbolFqn(s)}"));
+
+    private static string EscapeMdBackticks(string s) => s.Replace('`', '\'');
+
+    /// <summary>
+    /// Finds every declaration in <paramref name="root"/> whose name equals <paramref name="symbolName"/>
+    /// (class/interface/method/property/event/constructor; a <c>FieldDeclarationSyntax</c> contributes one
+    /// match per matching variable). Returns an empty list when nothing matches.
+    /// </summary>
+    private static List<(SyntaxNode Declaration, SyntaxNode? Variable)> FindDeclarationMatches(SyntaxNode root, string symbolName)
+    {
+        var matches = new List<(SyntaxNode Declaration, SyntaxNode? Variable)>();
+        foreach (var node in root.DescendantNodes())
+        {
+            switch (node)
+            {
+                case ClassDeclarationSyntax c when string.Equals(c.Identifier.ValueText, symbolName, StringComparison.Ordinal):
+                    matches.Add((node, null));
+                    break;
+                case InterfaceDeclarationSyntax i when string.Equals(i.Identifier.ValueText, symbolName, StringComparison.Ordinal):
+                    matches.Add((node, null));
+                    break;
+                case MethodDeclarationSyntax m when string.Equals(m.Identifier.ValueText, symbolName, StringComparison.Ordinal):
+                    matches.Add((node, null));
+                    break;
+                case PropertyDeclarationSyntax p when string.Equals(p.Identifier.ValueText, symbolName, StringComparison.Ordinal):
+                    matches.Add((node, null));
+                    break;
+                case EventDeclarationSyntax e when string.Equals(e.Identifier.ValueText, symbolName, StringComparison.Ordinal):
+                    matches.Add((node, null));
+                    break;
+                case ConstructorDeclarationSyntax k when string.Equals(k.Identifier.ValueText, symbolName, StringComparison.Ordinal):
+                    matches.Add((node, null));
+                    break;
+                case FieldDeclarationSyntax f:
+                    foreach (var variable in f.Declaration.Variables)
+                    {
+                        if (string.Equals(variable.Identifier.ValueText, symbolName, StringComparison.Ordinal))
+                        {
+                            matches.Add((node, variable));
+                        }
+                    }
+
+                    break;
+            }
+        }
+
+        return matches;
+    }
+
+    private static string BuildAmbiguousDeclarationsMessage(
+        string symbolName,
+        string fullPath,
+        List<(SyntaxNode Declaration, SyntaxNode? Variable)> matches,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Symbol `{symbolName}` matches {matches.Count} declarations in `{fullPath}`. Provide 1-based `line`/`column` to select one:");
+        sb.AppendLine();
+        foreach (var (declaration, variable) in matches)
+        {
+            var symbol = semanticModel.GetDeclaredSymbol(variable ?? declaration, cancellationToken);
+            var fqn = symbol is null
+                ? "(unresolvable)"
+                : GetSymbolFqn(symbol);
+            var pos = declaration.SyntaxTree.GetLineSpan(declaration.Span).StartLinePosition;
+            sb.AppendLine($"- {fqn} — {pos.Line + 1}:{pos.Character + 1}");
+        }
+
+        return sb.ToString().TrimEnd();
     }
 
     private static string GetTypeKindLabel(INamedTypeSymbol type) => type.TypeKind switch
@@ -634,162 +1040,60 @@ public sealed class NavigationTools
         _ => type.TypeKind.ToString().ToLowerInvariant()
     };
 
-    private static ISymbol PickPrimarySymbol(IReadOnlyList<ISymbol> symbols)
-    {
-        return symbols
-            .OrderByDescending(SymbolPriority)
-            .ThenBy(s => s is IMethodSymbol m ? m.Parameters.Length : 0)
-            .ThenBy(s => s.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), StringComparer.Ordinal)
-            .First();
-    }
-
-    private static int SymbolPriority(ISymbol symbol) => symbol switch
-    {
-        INamedTypeSymbol => 400,
-        IMethodSymbol => 300,
-        IPropertySymbol => 250,
-        IEventSymbol => 200,
-        IFieldSymbol => 150,
-        _ => 100
-    };
-
-    private static async Task<string> GetReferenceSourceLineAsync(
-        ReferenceLocation refLoc,
-        Dictionary<DocumentId, SourceText> textByDocument,
-        CancellationToken cancellationToken)
-    {
-        var document = refLoc.Document;
-        if (!textByDocument.TryGetValue(document.Id, out var text))
-        {
-            text = await document.GetTextAsync(cancellationToken).ConfigureAwait(false);
-            textByDocument[document.Id] = text;
-        }
-
-        var lineIndex = refLoc.Location.GetLineSpan().StartLinePosition.Line;
-        if (lineIndex < 0 || lineIndex >= text.Lines.Count)
-        {
-            return string.Empty;
-        }
-
-        var raw = text.Lines[lineIndex].ToString().TrimEnd();
-        if (raw.Length > MaxFindUsagesSourceLineChars)
-        {
-            return raw[..MaxFindUsagesSourceLineChars] + "…";
-        }
-
-        return raw;
-    }
-
-    private static string EscapeMdBackticks(string s) => s.Replace('`', '\'');
-
-    private static SyntaxNode? FindMatchingDeclaration(SyntaxNode root, string symbolName)
-    {
-        return root.DescendantNodes().FirstOrDefault(node =>
-            node switch
-            {
-                ClassDeclarationSyntax c => string.Equals(c.Identifier.ValueText, symbolName, StringComparison.Ordinal),
-                InterfaceDeclarationSyntax i => string.Equals(i.Identifier.ValueText, symbolName, StringComparison.Ordinal),
-                MethodDeclarationSyntax m => string.Equals(m.Identifier.ValueText, symbolName, StringComparison.Ordinal),
-                _ => false
-            });
-    }
-
-    private static string GetEnclosingContext(SyntaxNode? referenceNode)
-    {
-        if (referenceNode is null)
-        {
-            return "(context not available)";
-        }
-
-        var method = referenceNode.AncestorsAndSelf().OfType<MethodDeclarationSyntax>().FirstOrDefault();
-        if (method is not null)
-        {
-            return ToSingleLine(method.WithBody(null).WithExpressionBody(null).WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-        }
-
-        var ctor = referenceNode.AncestorsAndSelf().OfType<ConstructorDeclarationSyntax>().FirstOrDefault();
-        if (ctor is not null)
-        {
-            return ToSingleLine(ctor.WithBody(null).WithExpressionBody(null).WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-        }
-
-        var property = referenceNode.AncestorsAndSelf().OfType<PropertyDeclarationSyntax>().FirstOrDefault();
-        if (property is not null)
-        {
-            return ToSingleLine(SanitizeProperty(property));
-        }
-
-        var field = referenceNode.AncestorsAndSelf().OfType<FieldDeclarationSyntax>().FirstOrDefault();
-        if (field is not null)
-        {
-            return ToSingleLine(field);
-        }
-
-        var classDecl = referenceNode.AncestorsAndSelf().OfType<ClassDeclarationSyntax>().FirstOrDefault();
-        if (classDecl is not null)
-        {
-            return $"class {classDecl.Identifier.ValueText}";
-        }
-
-        var interfaceDecl = referenceNode.AncestorsAndSelf().OfType<InterfaceDeclarationSyntax>().FirstOrDefault();
-        if (interfaceDecl is not null)
-        {
-            return $"interface {interfaceDecl.Identifier.ValueText}";
-        }
-
-        return ToSingleLine(referenceNode);
-    }
-
-    private static PropertyDeclarationSyntax SanitizeProperty(PropertyDeclarationSyntax property)
-    {
-        if (property.AccessorList is null)
-        {
-            return property;
-        }
-
-        var sanitizedAccessors = property.AccessorList.Accessors.Select(accessor =>
-            accessor
-                .WithBody(null)
-                .WithExpressionBody(null)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-
-        return property.WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(sanitizedAccessors)));
-    }
-
-    private static string ToSingleLine(SyntaxNode node)
-    {
-        return node.NormalizeWhitespace(eol: " ", indentation: string.Empty)
-            .ToFullString()
-            .Trim();
-    }
-
     [McpServerTool(Name = "get_call_graph", Title = "Get method call graph")]
     [Description(
-        "Builds callers and callees for a method in the loaded workspace (after applying **saved** `.cs` from disk). Use for bug investigation instead of loading many method bodies.")]
+        "Builds callers and callees for a method in the loaded workspace (after applying **saved** `.cs` from disk). Use for bug investigation instead of loading many method bodies. "
+        + "Target the method by `className`+`methodName`, or by 1-based `line`/`column` on the method declaration or an invocation (the position wins; `className`/`methodName` are then ignored). "
+        + "When the total number of nodes exceeds `maxNodes` (default 25), the full graph (same markdown) is written to a temp file and a short response (node count + path) is returned. "
+        + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> GetCallGraph(
-        [Description("Path to the .cs file containing the method.")] string filePath,
-        [Description("Class name containing the method.")] string className,
-        [Description("Method name.")] string methodName,
-        [Description("Max nodes per callers/callees list (default 25).")] int maxNodes = 25,
+        [Description("Path to the .cs file containing the method (or the file with the `line`/`column` position).")] string filePath,
+        [Description("Class name containing the method (ignored when `line`/`column` are provided).")] string? className = null,
+        [Description("Method name (ignored when `line`/`column` are provided).")] string? methodName = null,
+        [Description("1-based line of the method (declaration or invocation); must be provided together with `column`.")] int? line = null,
+        [Description("1-based column of the method (declaration or invocation); must be provided together with `line`.")] int? column = null,
+        [Description("Max nodes per callers/callees list (default 25). When the total number of nodes exceeds this cap, the full graph is written to a temp file.")] int maxNodes = 25,
         [Description("When true, includes callees outside the loaded solution (e.g. BCL).")] bool includeExternalCallees = false,
         CancellationToken cancellationToken = default)
     {
         const string toolName = nameof(GetCallGraph);
         try
         {
+            var hasLine = line.HasValue;
+            var hasColumn = column.HasValue;
+            if (hasLine != hasColumn)
+            {
+                return ToolTelemetry.TraceAndReturn(toolName, "Error: `line` and `column` must be provided together (both 1-based).");
+            }
+
+            if (!hasLine && (string.IsNullOrWhiteSpace(className) || string.IsNullOrWhiteSpace(methodName)))
+            {
+                return ToolTelemetry.TraceAndReturn(toolName, "Error: provide `className`+`methodName`, or both 1-based `line` and `column`.");
+            }
+
             var fullPath = _solutionManager.ResolvePathAgainstWorkspace(filePath);
             var document = await _solutionManager.FindDocumentAsync(fullPath, cancellationToken).ConfigureAwait(false);
             if (document is null)
             {
-                return ToolTelemetry.TraceAndReturn(toolName, $"Document not in workspace: `{fullPath}`. Call `load_workspace` first.");
+                return ToolTelemetry.TraceAndReturn(toolName, $"Document not in workspace: `{fullPath}`. The workspace loads lazily from the config `workspace-path` (or via `reload`) — check the config or call `reload`.");
             }
 
             var solution = document.Project.Solution;
-            var graph = await CallGraphHelper.BuildCallGraphAsync(
-                solution, document, className, methodName, maxNodes, includeExternalCallees, cancellationToken)
-                .ConfigureAwait(false);
+            var graph = hasLine
+                ? await CallGraphHelper.BuildCallGraphAtPositionAsync(
+                    solution, document, line!.Value, column!.Value, includeExternalCallees, cancellationToken)
+                    .ConfigureAwait(false)
+                : await CallGraphHelper.BuildCallGraphAsync(
+                    solution, document, className!, methodName!, includeExternalCallees, cancellationToken)
+                    .ConfigureAwait(false);
 
-            return ToolTelemetry.TraceAndReturn(toolName, CallGraphHelper.FormatMarkdown(graph));
+            var cap = Math.Clamp(maxNodes, 1, 100);
+            var totalNodes = graph.Callers.Count + graph.Callees.Count;
+            var summary = $"Callers: {graph.Callers.Count}, Callees: {graph.Callees.Count}";
+
+            return ToolTelemetry.TraceAndReturn(
+                toolName,
+                SearchOverflowHelper.CapOrWriteToTempFile(totalNodes, cap, CallGraphHelper.FormatMarkdown(graph), summary));
         }
         catch (OperationCanceledException)
         {

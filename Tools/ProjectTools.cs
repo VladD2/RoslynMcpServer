@@ -65,7 +65,7 @@ public sealed class ProjectTools
     [McpServerTool(Name = "add_package_reference", Title = "Add NuGet package reference")]
     [Description(
         "Adds a PackageReference to a .csproj file. Verify package id/version with search_nuget_registry first. "
-        + "Relative `projectPath` resolves against process CWD (prefer absolute paths). Clears in-memory workspace — call `load_workspace` after.")]
+        + "Relative `projectPath` resolves against process CWD (prefer absolute paths). Clears in-memory workspace — use `reload` after.")]
     public async Task<string> AddPackageReference(
         [Description("Path to `.csproj` (prefer absolute; relative uses process CWD).")] string projectPath,
         [Description("NuGet package id, e.g. Moq.")] string packageId,
@@ -78,7 +78,7 @@ public sealed class ProjectTools
             var message = await ProjectFileHelper.AddPackageReferenceAsync(projectPath, packageId, version, cancellationToken)
                 .ConfigureAwait(false);
             await _solutionManager.ClearWorkspaceAsync(cancellationToken).ConfigureAwait(false);
-            return ToolTelemetry.TraceAndReturn(toolName, message + " Call `load_workspace` to refresh Roslyn state.");
+            return ToolTelemetry.TraceAndReturn(toolName, message + " Use `reload` to restore the Roslyn workspace state.");
         }
         catch (Exception ex)
         {
@@ -90,7 +90,7 @@ public sealed class ProjectTools
     [McpServerTool(Name = "remove_package_reference", Title = "Remove NuGet package reference")]
     [Description(
         "Removes a PackageReference from a .csproj file. Relative `projectPath` resolves against process CWD (prefer absolute). "
-        + "Clears in-memory workspace — call `load_workspace` after.")]
+        + "Clears in-memory workspace — use `reload` after.")]
     public async Task<string> RemovePackageReference(
         [Description("Path to `.csproj` (prefer absolute; relative uses process CWD).")]
         string projectPath,
@@ -104,7 +104,7 @@ public sealed class ProjectTools
             var message = await ProjectFileHelper.RemovePackageReferenceAsync(projectPath, packageId, cancellationToken)
                 .ConfigureAwait(false);
             await _solutionManager.ClearWorkspaceAsync(cancellationToken).ConfigureAwait(false);
-            return ToolTelemetry.TraceAndReturn(toolName, message + " Call `load_workspace` to refresh Roslyn state.");
+            return ToolTelemetry.TraceAndReturn(toolName, message + " Use `reload` to restore the Roslyn workspace state.");
         }
         catch (Exception ex)
         {
@@ -124,9 +124,9 @@ public sealed class ProjectTools
             _logger.LogWarning(ex, "ClearWorkspace after RenameProject failed");
         }
 
-        return ToolTelemetry.TraceAndReturn(
-            toolName,
-            message + Environment.NewLine + Environment.NewLine
-            + "Workspace cache cleared. Call `load_workspace` on the solution, then `run_dotnet_build`.");
+            return ToolTelemetry.TraceAndReturn(
+                toolName,
+                message + Environment.NewLine + Environment.NewLine
+                + "Workspace cache cleared. Use `reload` on the solution, then `run_dotnet_build`.");
     }
 }

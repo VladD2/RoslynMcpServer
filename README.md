@@ -80,9 +80,54 @@ Example server block:
 
 Restart OpenCode or reload MCP servers after running the script.
 
+## Config (`RoslynMcp.jsonc`)
+
+Workspace and search output are configured via a `RoslynMcp.jsonc` file (JSONC = JSON with comments). It is read from **two places at startup and merged**, exactly like the `TfsMcp`/`MCP` servers: the **exe directory** first, then the **current working directory** (cwd wins for conflicting keys). If no config file is found, the workspace falls back to `ROSLYN_MCP_WORKSPACE` (or cwd) solution discovery — semantic tools then guide you toward source candidates.
+
+Keys (flat kebab-case):
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `workspace-path` | — | `.sln` / `.slnx` / `.csproj` to load **lazily** (the first semantic call after start loads it and can take minutes). |
+| `configuration` | — | MSBuild `Configuration` global property (e.g. `Sit-Debug`). Inherited by `run_dotnet_build`/`run_dotnet_test`/`run_specific_test` when their arg is omitted. |
+| `platform` | — | MSBuild `Platform` global property (e.g. `AnyCPU`). Inherited by build/test when their arg is omitted. |
+| `target-framework` | — | MSBuild `TargetFramework` (inner TFM, e.g. `net10.0`) when the solution uses `TargetFrameworks`. |
+| `max-results` | `50` | Unified cap for `find_*`/`search_code` results; per-call argument overrides it. |
+| `preview` | `false` | Default for the `preview` argument of the `find_*` search tools (include source line text). |
+
+Example `RoslynMcp.jsonc` (place it next to `RoslynMcpServer.exe` for global defaults, or in your project root — cwd wins — for per-project overrides):
+
+```jsonc
+{
+  // Workspace: path + MSBuild global properties (lazy loading)
+  "workspace-path": "F:/src/MyApp/MyApp.sln", // .sln / .slnx / .csproj
+  "configuration": "Sit-Debug",               // optional
+  "platform": "AnyCPU",                       // optional
+  "target-framework": "net10.0",              // optional (TargetFrameworks → inner TFM)
+
+  // Search output (optional)
+  "max-results": 50,  // unified cap of search methods (default 50)
+  "preview": false    // default for preview (false — the model decides)
+}
+```
+
+Use `reload` after changing these values (or to re-load a different `workspace-path` when the solution changes).
+
 ## Agent tools by version
 
 Tracks MCP tools relevant to [`AGENTS.md.sample`](AGENTS.md.sample) (copy into app repos as `AGENTS.md`). Current server version: see `RoslynMcpServer.csproj`.
+
+### v1.2.0
+
+- **Workspace via config + lazy load** — `load_workspace` / `reset_workspace` are removed; the workspace comes from `RoslynMcp.jsonc` `workspace-path` and is loaded **lazily** on the first semantic call (which can take minutes — set the host MCP `timeout` ≥ 600000 ms). The single **`reload`** tool re-loads the workspace (dispose + load) from the config or explicit arguments; call it after `dotnet build` (generated `obj`) / `.csproj`/`.sln`/`Directory.Build.props` edits.
+- **−21 methods** (duplicates of OpenCode host tools + AST noise). Owned file read/write/edit (`get_file_content`, `read_file_range`, `apply_patch`, `update_file_content`, `read_log_tail`, `tail_tool_log`, `get_changed_files`, `list_directory_tree`) and shell/proc (`execute_dotnet_command`, `manage_agent_scratchpad`) and AST extras (`add_using`, `remove_using`, `remove_member`, `add_type_to_class_bases`, `move_type_to_new_file`, `generate_test_method_stub`) are gone — use the host `read`/`write`/`edit`/`bash`/`git` tools.
+- **`add_*_to_class` → `add_member`** — `add_method_to_class` + `add_property_to_class` + `add_field_to_class` became a single `add_member(filePath, className, memberSource)`.
+- **FQN + position in `find_*`** — `find_symbol_definition`/`find_usages`/`find_implementations` accept a fully-qualified name (exact match); `find_symbol_references`/`get_call_graph`/`rename_symbol` accept a 1-based `line`/`column` to select the exact symbol.
+- **`line:col` always** — search results return **1-based line:column** regardless of `preview`; `preview` only adds the source line text (default: positions only).
+- **`preview`** — unified parameter on `find_*` search tools (default `false`; overridable by config `preview`).
+- **cap 50 → temp file** — results exceeding the cap (config `max-results`, default 50) are written in full to `%Temp%\roslyn-mcp\<yyyyMMdd-HHmmss-<short-guid>>\result.md`; the response returns the count + path instead of silently truncating.
+
+> **Migration for existing `AGENTS.md` with `load_workspace`:** replace `load_workspace <path>` / `reset_workspace` with the `reload` tool (or by setting `workspace-path` in `RoslynMcp.jsonc`). The workspace loads lazily from the config — remove any startup `load_workspace` calls; the first semantic call after server start may take minutes (host timeout ≥ 600000 ms). Drop references to the removed file/shell tools and use the host `read`/`write`/`edit`/`bash`/`git` tools instead.
 
 ### v1.1.0
 
@@ -218,12 +263,12 @@ Even if the MCP is active, AI clients don't always load the tools into the curre
 
 Policy summary (full text in the sample):
 
-- `load_workspace` before symbol / build / decompile work; prefer `.sln` / `.slnx`
+- Workspace is taken from `RoslynMcp.jsonc` (`workspace-path`) and loaded lazily — the first semantic call after start can take minutes; use `reload` after build / `.csproj` changes; prefer `.sln` / `.slnx`
 - Missing `Compile` target on load → retry with `targetFramework` (inner TFM); not SDK mismatch
 - VS 2026 BuildHost / `XMakeElements` → not SDK mismatch; need MCP 1.0.35+ or a single SDK-style `.csproj`
 - C# identifiers → MCP first; plain text → host Grep; never shell `grep` / `dotnet build|test`
-- Saved `.cs` (v1.1.0+) sync into symbol search automatically; unsaved editor buffers are ignored; `reset_workspace` after build / generated `obj`
-- IDE: host edit/write; headless: MCP `apply_patch` / AST tools
+- Saved `.cs` (v1.1.0+) sync into symbol search automatically; unsaved editor buffers are ignored; `reload` only after build / generated `obj` / `.csproj` edits
+- File read/write/edit → host tools (read/write/edit/bash); AST edits/insertions → MCP `add_member` / `update_method_body` / `organize_usings` / `implement_interface` / `extract_interface`
 - Secrets: never paste PAT/passwords; app README must document run target / sample args
 
 ## Logs
@@ -239,73 +284,89 @@ Policy summary (full text in the sample):
 ## Reference: MCP Tools
 
 **Parameter Naming Rules:**
-- `filePath` — a single file (read/edit/diagnostics/logs).
-- `directoryPath` — root folder (`list_directory_tree`, optional root for `search_code`).
+- `filePath` — a single `.cs` file (semantic/navigation/AST edit).
+- `path` — a `.cs` file or directory for `get_code_skeleton` (absolute path; disk-based, no workspace required).
 - `includeExtensions` — optional extension filter for `search_code` (`.cs` by default; `*` = all files).
 - `caseSensitive` — optional for `search_code` (default `false`; use `true` for leftover branding checks).
-- `workspacePath` — `.sln` / `.slnx` / `.csproj` (and sometimes a directory): `load_workspace`, `run_dotnet_test`, `run_specific_test`, `run_format`, optional reload for `list_projects` / `get_project_graph`. **`run_dotnet_build` accepts only a `.csproj`, `.sln`, or `.slnx` file path, not a directory.** Prefer `.sln`/`.slnx` for multi-config solutions.
+- `workspacePath` — `.sln` / `.slnx` / `.csproj` (and sometimes a directory): `run_dotnet_test`, `run_specific_test`, `run_format`, `list_nuget_packages`, `run_nuget_audit`, `list_outdated_packages`, optional reload for `list_projects` / `get_project_graph`. **`run_dotnet_build` / `run_dotnet_run` accept only a `.csproj`, `.sln`, or `.slnx` file path, not a directory.** Prefer `.sln`/`.slnx` for multi-config solutions.
 - `symbolName` — C# identifier for `find_symbol_definition`, `find_symbol_references`, `find_usages`, and `find_implementations` (exact name; matching is case-insensitive for definition/usages/implementations).
 - `diagnosticId` — compiler/analyzer id from `get_diagnostics_for_file` (e.g. `CS0246`) for `get_code_fixes` / `apply_code_fix`.
 - `fixIndex` — 0-based index from `get_code_fixes` for `apply_code_fix`.
-- `path` — `.cs` file or directory for `get_code_skeleton` (absolute path; disk-based, no workspace required).
 
-When a tool accepts `filePath`, relative values are resolved against the loaded workspace root after `load_workspace`; if no workspace is loaded, fallback is `Environment.CurrentDirectory`.
+When a tool accepts `filePath`, relative values are resolved against the loaded workspace root; if no workspace is loaded, the fallback is `Environment.CurrentDirectory`. The workspace is taken from the `RoslynMcp.jsonc` config (`workspace-path`) and loaded **lazily** — the first semantic call after server start can take minutes (set the host MCP `timeout` to ≥ 600000 ms).
 
-There are **56** registered tools (see list below) and **1** MCP prompt (`RefactoringAssistantPrompt`).
+There are **40** registered tools (see list below) and **1** MCP prompt (`RefactoringAssistantPrompt`).
 
-### Workspace / Roslyn
+### Workspace
 
 <details>
-<summary><code>load_workspace</code> — Loads .sln/.slnx/.csproj into MSBuildWorkspace.</summary>
+<summary><code>reload</code> — Disposes and reloads the MSBuildWorkspace from the config or explicit arguments.</summary>
 
 **Parameters:**
-- `workspacePath: string` — `.sln`, `.slnx`, or `.csproj` file (not a directory). Prefer solution files for multi-config repos.
-- `configuration: string?` — optional MSBuild `Configuration` global property (e.g. `Sit-Debug`, `kart`). Inherited by build/test when those tools omit `-c`.
-- `platform: string?` — optional MSBuild `Platform` (`Any CPU` → `AnyCPU`). Inherited by build/test as `-p:Platform=`.
-- `targetFramework: string?` — optional MSBuild `TargetFramework` (e.g. `net10.0`). Pass when the solution uses `TargetFrameworks` so design-time evaluation is an inner TFM with a `Compile` target. Not inherited by build/test.
+- `workspacePath: string?` — optional `.sln`, `.slnx`, or `.csproj` file (not a directory). Omit to use config `workspace-path`.
+- `configuration: string?` — optional MSBuild `Configuration` global property (e.g. `Sit-Debug`). Omit to use config `configuration`.
+- `platform: string?` — optional MSBuild `Platform` (`Any CPU` → `AnyCPU`). Omit to use config `platform`.
+- `targetFramework: string?` — optional MSBuild `TargetFramework` (e.g. `net10.0`). Omit to use config `target-framework`.
 
-**Behavior:** Host abort mid-load returns **Workspace Load Cancelled (client abort)** (raise MCP tool timeout; not an MSBuild failure). After a successful load, **saved** `.cs` files are watched and applied before symbol search (unsaved buffers ignored). A changed `.csproj`/`.sln`/`Directory.Build.props` skips the next `load_workspace` cache. NuGet restore warnings (`NU1701` TFM compat, audit, prune) and design-time MSBuild warnings (ASP.NET/SDK deprecation such as `IncludeOpenAPIAnalyzers`/`ASPDEPR007`, processor-architecture mismatch, analyzer project without metadata) are shown as warnings and do not fail load even when wrapped as `Msbuild failed when processing the file`; true MSBuild/SDK errors (`error NU|MSB|NETSDK`) still do. Empty `TargetFramework` (`ResolvePackageAssets`) is a dedicated failure — retry with the IDE solution config, or the `.sln` is Bazel-generated and not MSBuild-evaluable. Missing `Compile` target (CrossTargeting outer build) is a dedicated failure — retry with `targetFramework` from the report / `Directory.Build.props`; `dotnet build` can still succeed. VS 2026 / MSBuild 18 BuildHost crash (`XMakeElements`) is a dedicated failure — **not** `MCP_MSBUILD_SDK_MISMATCH`; use MCP 1.0.35+ or load a single SDK-style `.csproj`.
+**Behavior:** Path and MSBuild properties default to `RoslynMcp.jsonc`; arguments override the config. Call after `dotnet build` (generated `obj`), `.csproj`/`.sln`/`Directory.Build.props` edits, or project switching. Ordinary `.cs` saves do not need a reload (disk-sync). The first load of a large solution can take minutes — raise the host MCP timeout.
 </details>
 
-<details>
-<summary><code>reset_workspace</code> — Clears the in-memory MSBuildWorkspace/solution cache. Call before <code>load_workspace</code> again after building the loaded solution on disk (generated files / refs). Saved <code>.cs</code> edits sync without reset (v1.1.0+).</summary>
-
-**Parameters:** *(none)*
-</details>
+### Semantics / Navigation
 
 <details>
-<summary><code>get_file_content</code> — Reads the entire file from disk (safe preview for large files).</summary>
+<summary><code>find_symbol_definition</code> — Semantic lookup: where a type or member is declared (FQN + file:line:col) in the loaded solution.</summary>
 
 **Parameters:**
-- `filePath: string`
+- `symbolName: string` — class, interface, struct, enum, or member identifier, or an exact FQN.
+- `maxResults: int?`, `preview: bool?`
+
+**Behavior:** A `symbolName` containing `.` is treated as an exact FQN (no fallback to the simple name); on no match the error lists the candidate FQNs. Returns the symbol display string, **fully-qualified name (FQN)**, and **1-based file:line:col**. Do **not** answer “where is X **declared**?” with plain-text search or shell `grep`/`findstr`/`Select-String`. For arbitrary text search use your environment’s built-in **`grep`** tool.
 </details>
 
 <details>
-<summary><code>get_class_skeleton</code> — Returns the C# file structure without method bodies (workspace index after applying saved <code>.cs</code>).</summary>
+<summary><code>find_usages</code> — Solution-wide references for a declared name: file, 1-based line:col (and optional line text).</summary>
 
 **Parameters:**
-- `filePath: string`
+- `symbolName: string` — declared name of the type or member, or an exact FQN.
+- `maxResults: int?`, `preview: bool?`
+
+**Behavior:** Applies saved `.cs` from disk first. Returns **1-based line:column** per reference, grouped by file. A `symbolName` containing `.` is an exact FQN (no fallback). If several declarations share a name, all are reported (a summary table groups references by FQN); narrow the name or pass an FQN to disambiguate. By default only positions are returned (no line text); pass `preview=true` for the source line text.
 </details>
 
 <details>
-<summary><code>get_code_skeleton</code> — Parses `.cs` from disk and returns full-file syntax with bodies stripped (signatures + empty blocks); optional directory scan (max 20 files, skips <code>bin</code>/<code>obj</code>/<code>Test</code>/<code>Tests</code> path segments).</summary>
-
-**Parameters:**
-- `path: string` — absolute path to one `.cs` file or a folder to scan recursively.
-
-**Note:** Does not require `load_workspace`. For a file already in the loaded solution, `get_class_skeleton` may still be preferable (workspace-consistent view).
-**Important:** This tool is file/folder-only (`path`). Do **not** pass `assemblyName` / `typeName`; for external/NuGet assemblies use `decompile_type` / `get_decompiled_class_skeleton`.
-</details>
-
-<details>
-<summary><code>get_method_body</code> — Returns the source code of a specific method within a named class.</summary>
+<summary><code>find_symbol_references</code> — Finds usages of a class/interface/method when you know the declaring `.cs` file.</summary>
 
 **Parameters:**
 - `filePath: string`
-- `className: string`
-- `methodName: string`
+- `symbolName: string?` — declaration name (class/interface/method/property/field/event/constructor); ignored when `line`/`column` are provided
+- `line: int?` / `column: int?` — 1-based position on the declaration *or* a usage (both required together) — selects the exact symbol
+- `maxResults: int?`, `preview: bool?`
 
-**Path resolution:** `filePath` may be absolute or workspace-relative. After `load_workspace`, `src/...` is resolved from the loaded `.sln`/`.slnx`/`.csproj` directory.
+**Behavior:** Without a position and with several same-named declarations in the file, returns an error listing the candidates (FQN + line:col) — no blind first match. Returns **1-based line:column** per reference, grouped by file.
+</details>
+
+<details>
+<summary><code>find_implementations</code> — Find classes implementing an interface or derived from a base type.</summary>
+
+**Parameters:**
+- `symbolName: string` — interface or base class name or exact FQN (e.g. `IRepository`, `BaseController`)
+- `transitive: bool = true` — when `true`, includes indirect implementations / derived types in the hierarchy
+- `maxResults: int?`, `preview: bool?`
+
+**Behavior:** For **interfaces** uses Roslyn `FindImplementationsAsync`; for **classes/structs** uses `FindDerivedClassesAsync`. Each result is reported as `path:line:col`. Do not use text search or `find_usages` for “who implements X?” / “what inherits from Y?”.
+</details>
+
+<details>
+<summary><code>get_call_graph</code> — Callers and callees for a method (workspace; saved <code>.cs</code> applied first).</summary>
+
+**Parameters:**
+- `filePath: string` — `.cs` file containing the method (or the file with the `line`/`column` position)
+- `className: string?` / `methodName: string?` — required together unless `line`/`column` are provided
+- `line: int?` / `column: int?` — 1-based position on the method declaration or an invocation (both required together) — alternative to `className`+`methodName`
+- `maxNodes: int = 25` — cap; when the total node count exceeds it, the full graph is written to a temp file
+- `includeExternalCallees: bool = false` — include BCL / external calls
+
+**Behavior:** Uses `SymbolFinder.FindCallersAsync` and invocation analysis. Use for bug investigation instead of loading many bodies via `get_method_body`.
 </details>
 
 <details>
@@ -314,7 +375,7 @@ There are **56** registered tools (see list below) and **1** MCP prompt (`Refact
 **Parameters:**
 - `filePath: string`
 
-**Output:** each line includes severity, **line**, **column**, diagnostic id (e.g. `CS0246`, `IDE0001`), and message. Use these values with `get_code_fixes`.
+**Output:** each line includes severity, **line**, **column** (1-based), diagnostic id (e.g. `CS0246`, `IDE0001`), and message. Use these values with `get_code_fixes`.
 </details>
 
 <details>
@@ -342,16 +403,61 @@ There are **56** registered tools (see list below) and **1** MCP prompt (`Refact
 - `column: int = 1`
 - `previewOnly: bool = false` — when `true`, returns a diff preview without writing files
 
-**Behavior:** writes changed files to disk and updates the in-memory workspace. Re-run `get_diagnostics_for_file` to verify remaining issues.
-
-**Note:** `fixIndex` is valid only for the same `filePath` / `diagnosticId` / `line` / `column` pair in the same session (file must not change between `get_code_fixes` and `apply_code_fix`).
+**Behavior:** writes changed files to disk and updates the in-memory workspace. Re-run `get_diagnostics_for_file` to verify remaining issues. `fixIndex` is valid only for the same `filePath` / `diagnosticId` / `line` / `column` pair in the same session.
 </details>
+
+<details>
+<summary><code>rename_symbol</code> — Semantic C# symbol rename via Roslyn with preview capability.</summary>
+
+**Parameters:**
+- `filePath: string`
+- `symbolName: string`
+- `newName: string`
+- `line: int?` / `column: int?` — 1-based position on the declaration or a usage (both required together) — selects the exact symbol
+- `scope: string = "project"` — allowed: `project` | `solution`
+- `previewOnly: bool = true`
+
+**Behavior:** Without a position and with several same-named declarations in the file, returns an error listing the candidates (FQN + line:col) — no blind first match. C# symbols only (types/members/namespaces). For project folder / `.csproj` / solution graph use `rename_project`. For README/rules/URLs use host Grep/edit.
+</details>
+
+### Skeletons / Reading
+
+<details>
+<summary><code>get_class_skeleton</code> — Returns the C# file structure without method bodies (workspace index after applying saved <code>.cs</code>).</summary>
+
+**Parameters:**
+- `filePath: string`
+
+Returns namespaces, types, properties, and method signatures (bodies omitted). For raw disk with no workspace (or to skip the index) use `get_code_skeleton`; for NuGet/DLL types use `get_decompiled_class_skeleton`.
+</details>
+
+<details>
+<summary><code>get_code_skeleton</code> — Parses `.cs` from disk and returns a structural syntax skeleton with bodies stripped (no workspace required).</summary>
+
+**Parameters:**
+- `path: string` — absolute path to one `.cs` file or a folder to scan recursively (up to 20 files; skips `bin`/`obj`/`Test`/`Tests` path segments).
+
+**Note:** This tool is file/folder-only. Do **not** pass `assemblyName` / `typeName`; for external/NuGet assemblies use `decompile_type` / `get_decompiled_class_skeleton`.
+</details>
+
+<details>
+<summary><code>get_method_body</code> — Returns the source of a specific method within a named class (reads disk).</summary>
+
+**Parameters:**
+- `filePath: string`
+- `className: string`
+- `methodName: string`
+
+**Path resolution:** `filePath` may be absolute or workspace-relative. First match wins (no overload selection) — use `update_method_body` with `parameterTypes` when overloads matter. Prefer over reading the whole file for large sources.
+</details>
+
+### Decompile (ILSpy)
 
 <details>
 <summary><code>explore_assembly</code> — Decompiles a referenced external assembly (NuGet/third-party DLL) via ILSpy and returns namespaces with visible top-level classes/interfaces.</summary>
 
 **Parameters:**
-- `assemblyName: string?` — simple name without `.dll` (resolved via loaded workspace; call `load_workspace` first).
+- `assemblyName: string?` — simple name without `.dll` (resolved via workspace MetadataReferences → deps.json → NuGet).
 - `assemblyPath: string?` — absolute path to a `.dll` (e.g. NuGet cache). Provide **one** of the two.
 </details>
 
@@ -362,7 +468,7 @@ There are **56** registered tools (see list below) and **1** MCP prompt (`Refact
 - `assemblyName: string?` / `assemblyPath: string?` — same as `explore_assembly` (one required).
 - `fullTypeName: string` (e.g. `Microsoft.AspNetCore.Mvc.ControllerBase`)
 
-**Behavior note:** if decompiled output exceeds 500 lines, the tool returns an error message instructing to use `get_decompiled_class_skeleton` and `get_decompiled_method_body`.
+**Behavior note:** if decompiled output exceeds 500 lines, the tool returns an error instructing to use `get_decompiled_class_skeleton` and `get_decompiled_method_body`.
 </details>
 
 <details>
@@ -382,89 +488,17 @@ There are **56** registered tools (see list below) and **1** MCP prompt (`Refact
 - `methodName: string`
 </details>
 
-<details>
-<summary><code>find_symbol_references</code> — Finds usages of a class/interface/method across the solution.</summary>
-
-**Parameters:**
-- `filePath: string`
-- `symbolName: string`
-</details>
+### Editing (AST)
 
 <details>
-<summary><code>find_symbol_definition</code> — Semantic lookup: where a type or member is declared (file path + line) in the loaded solution.</summary>
-
-**Parameters:**
-- `symbolName: string` — class, interface, struct, enum, or member identifier (e.g. `IRunCommand`).
-
-**Model guidance:** after `load_workspace`, use this for “where is X **declared**?” — do **not** answer that with plain-text search or invent a generic tool named `search`. For free-text matches across files, use your client’s built-in **`grep`** tool (not `bash`/`PowerShell` grep). This tool avoids `bin/`/`obj/` and uses Roslyn. **Saved** `.cs` (IDE/git) are applied before search; unsaved buffers are ignored — no `reset_workspace` for ordinary saves.
-</details>
-
-<details>
-<summary><code>find_usages</code> — Solution-wide references for a declared name: file, line, and source line text (capped at 30 locations).</summary>
-
-**Parameters:**
-- `symbolName: string` — declared name of the type or member (e.g. `Guard`, `Format`).
-
-**Behavior:** Requires `load_workspace`. Applies saved `.cs` from disk first. Resolves declarations via Roslyn; if several symbols share the name, one primary symbol is chosen (types preferred over methods, then stable ordering). When you already know the declaring file, `find_symbol_references` may be more precise.
-</details>
-
-<details>
-<summary><code>find_implementations</code> — Find classes implementing an interface or derived from a base type.</summary>
-
-**Parameters:**
-- `symbolName: string` — interface or base class name (e.g. `IRepository`, `BaseController`)
-- `transitive: bool = true` — when `true`, includes indirect implementations / derived types in the hierarchy
-
-**Behavior:** Requires `load_workspace`. Applies saved `.cs` from disk first. For **interfaces**, uses Roslyn `FindImplementationsAsync`; for **classes/structs**, uses `FindDerivedClassesAsync`. Returns each matching type with file path and line (capped at 50). Do not use text search or `find_usages` for “who implements X?” / “what inherits from Y?”.
-
-**Model guidance:** after `load_workspace`, use this instead of grep or analyzing usages when you need the OOP hierarchy.
-</details>
-
-<details>
-<summary><code>get_call_graph</code> — Callers and callees for a method (workspace; saved <code>.cs</code> applied first).</summary>
-
-**Parameters:**
-- `filePath: string` — `.cs` file containing the method
-- `className: string`
-- `methodName: string`
-- `maxNodes: int = 25` — cap per callers/callees list
-- `includeExternalCallees: bool = false` — include BCL / external calls
-
-**Behavior:** Requires `load_workspace`. Uses `SymbolFinder.FindCallersAsync` and invocation analysis inside the method body. Use for bug investigation instead of loading many bodies via `get_method_body`.
-
-</details>
-
-### File Editing
-
-<details>
-<summary><code>update_file_content</code> — Completely overwrites a file. Creates missing directories automatically. New <code>.cs</code> under a loaded project is indexed on the next symbol search.</summary>
-
-**Parameters:**
-- `filePath: string`
-- `content: string`
-</details>
-
-<details>
-<summary><code>add_using</code> — Add a using directive via Roslyn AST.</summary>
-
-**Parameters:**
-- `filePath: string`
-- `namespaceName: string` — e.g. `System.Linq`
-
-Inserts and formats the directive. Requires `load_workspace`. Prefer over `apply_patch` for imports.
-
-</details>
-
-<details>
-<summary><code>add_method_to_class</code> — Insert a method into a class via Roslyn AST.</summary>
+<summary><code>add_member</code> — Insert a method, property, or field into a class via Roslyn DocumentEditor.</summary>
 
 **Parameters:**
 - `filePath: string`
 - `className: string` — top-level class name
-- `methodSource: string` — full method declaration (modifiers, signature, body)
+- `memberSource: string` — full member declaration: method (modifiers, signature, body), property, or field
 
-Parses C# syntax, inserts with DocumentEditor, formats the file. Prefer over `apply_patch` for new methods.
-
+Parses the member declaration, inserts it at the correct position (grouped by member kind, region-aware) with Roslyn `DocumentEditor.AddMember`, formats the file. Only method / property / field are supported (no events, constructors, records, or nested types). Workspace is from the config (`workspace-path`), loaded lazily. Prefer over a host patch for new members.
 </details>
 
 <details>
@@ -477,285 +511,19 @@ Parses C# syntax, inserts with DocumentEditor, formats the file. Prefer over `ap
 - `newBody: string` — statements only, or a full `{ ... }` block
 - `parameterTypes: string[]?` — e.g. `["string", "int"]` to disambiguate overloads; **required** when multiple overloads exist
 
-**Behavior:** Finds `MethodDeclarationSyntax`, parses `newBody` into a `BlockSyntax`, replaces block or expression-bodied body, validates syntax errors before write, formats the file. Use with `get_method_body` — prefer over `apply_patch` for body-only edits.
-
-</details>
-
-<details>
-<summary><code>remove_using</code> — Remove a using directive via Roslyn AST.</summary>
-
-**Parameters:** `filePath`, `namespaceName`
-
+**Behavior:** Finds `MethodDeclarationSyntax`, parses `newBody` into a `BlockSyntax`, replaces block or expression-bodied body, validates syntax errors before write, formats the file. Use with `get_method_body` — prefer over host edit for body-only edits.
 </details>
 
 <details>
 <summary><code>organize_usings</code> — Sort and optionally remove unused usings.</summary>
 
 **Parameters:** `filePath`, `removeUnused: bool = true`
-
-</details>
-
-<details>
-<summary><code>add_property_to_class</code> — Insert a property declaration via Roslyn AST.</summary>
-
-**Parameters:** `filePath`, `className`, `propertySource`
-
-</details>
-
-<details>
-<summary><code>add_field_to_class</code> — Insert a field declaration via Roslyn AST.</summary>
-
-**Parameters:** `filePath`, `className`, `fieldSource`
-
-</details>
-
-<details>
-<summary><code>remove_member</code> — Remove a class member by name.</summary>
-
-**Parameters:** `filePath`, `className`, `memberName`
-
-</details>
-
-<details>
-<summary><code>add_type_to_class_bases</code> — Add base class or interface to class base list.</summary>
-
-**Parameters:** `filePath`, `className`, `typeName`
-
 </details>
 
 <details>
 <summary><code>implement_interface</code> — Add interface to class and generate NotImplemented stubs.</summary>
 
 **Parameters:** `filePath`, `className`, `interfaceName`
-
-</details>
-
-<details>
-<summary><code>apply_patch</code> — Surgical find-and-replace tool.</summary>
-
-**Parameters:**
-- `filePath: string`
-- `oldString: string`
-- `newString: string`
-- `replaceAll: bool = false`
-
-**Behavior:** `replaceAll` continues the search after each inserted `newString` (does not rescan the replacement). Safe when `newString` contains `oldString`. Logs start/match/write with elapsed ms.
-</details>
-
-### Build / Test / CLI
-
-<details>
-<summary><code>run_dotnet_build</code> — Runs dotnet build and returns a compact diagnostic summary.</summary>
-
-**Parameters:**
-- `workspacePath: string` — must be an existing **`.csproj`, `.sln`, or `.slnx` file** (not a directory).
-- `configuration: string? = null` — optional `dotnet build -c` (e.g. `Sit-Debug`, `Dit-Debug`). Omit to inherit `load_workspace` configuration.
-- `noIncremental: bool = true` — pass `--no-incremental` on every build step (default). Set `false` only if you explicitly accept MSBuild up-to-date caching.
-- `platform: string? = null` — optional `-p:Platform=` (e.g. `x64`). Omit to inherit `load_workspace` platform.
-
-**Behavior:** Inherits full process env, then pins SDK via `MSBUILD_EXE_PATH`, `MSBuildSDKsPath`, `DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR` / `SDKS_VER` / `CLI_DIR`, `DOTNET_ROOT`. On MSBuild path mismatch → **`error MCP_MSBUILD_SDK_MISMATCH`** and `dotnet exec …/10.x/MSBuild.dll /restore`. Escalation: minimal build → pinned restore → restore (detailed if empty) → build normal → build detailed. **Effective exit** = last `dotnet build` step (not restore). Metadata reports `Configuration` / `Platform` / `NoIncremental`. **Key lines** include task `-- FAILED` with project context. No in-process result cache — “cached” greens were MSBuild incremental or exit overwrite.
-
-</details>
-
-<details>
-<summary><code>run_dotnet_test</code> — Runs dotnet test with condensed failure details.</summary>
-
-**Parameters:**
-- `workspacePath: string`
-- `timeoutSeconds: int = 300` — process timeout; `0` disables (not recommended). Raise for long integration tests (e.g. 900/1800).
-- `noBuild: bool = false` — pass `--no-build` (after a successful `run_dotnet_build`).
-- `noRestore: bool = false` — pass `--no-restore`.
-- `configuration: string? = null` — optional `dotnet test -c` (e.g. `Sit-Debug`). Omit to inherit `load_workspace` (use the same value as `run_dotnet_build` when `noBuild=true`).
-- `platform: string? = null` — optional `-p:Platform=`. Omit to inherit `load_workspace`.
-
-**Behavior:** When `noBuild=false`, runs incremental `dotnet build` first (same `-c` / platform; not the `run_dotnet_build` probe), then `dotnet test --no-build --no-restore`. Parser sees only the test process. `--logger "console;verbosity=normal"`. Summary from `Passed!`, `Test Run Successful` + `Total tests`/`Passed:` (Failed defaults to 0), or `.slnx` fail-only `Total tests` + `Failed:` (Passed inferred as Total − Failed − Skipped), or per-test `  Passed FQN [ms]` / `[1 s]` / `[1 m 28 s]`. MSBuild/prune noise ignored; duplicate NU audit lines deduped. Exit 0 without any summary marker → **`Status: partial`** + last 2KB. `run_specific_test` checks filter matched a test FQN. `timeoutSeconds` is the combined budget for build+test.
-
-</details>
-
-<details>
-<summary><code>run_specific_test</code> — Run dotnet test filtered to one class and/or method.</summary>
-
-**Parameters:**
-- `workspacePath: string`
-- `className: string?` — e.g. `UserServiceTests` (simple or fully qualified)
-- `methodName: string?` — e.g. `CreateUser_WhenValid_ReturnsOk`
-- `timeoutSeconds: int = 300` — same as `run_dotnet_test`.
-- `noBuild: bool = false` — pass `--no-build`.
-- `noRestore: bool = false` — pass `--no-restore`.
-- `configuration: string? = null` — optional `dotnet test -c` (same as `run_dotnet_test`).
-
-At least one of `className` or `methodName` is required. The tool builds a VSTest-safe `--filter` internally (`FullyQualifiedName~…`, no method `()`, no extra leading `.` on dotted names). After `load_workspace`, Roslyn resolves the type/method FQN when possible.
-
-**Model guidance:** use this for TDD red/green loops — do not run the full suite and do not craft VSTest filter strings manually. Prefer `className` + short `methodName`. After build, prefer `noBuild=true` for faster filtered re-runs. Same pre-test build split as `run_dotnet_test` when `noBuild=false`.
-
-</details>
-
-<details>
-<summary><code>get_test_list</code> — List test methods in loaded solution (JSON; saved <code>.cs</code> applied first).</summary>
-
-**Parameters:** `maxResults: int = 200`
-
-Detects Fact/Theory/TestMethod/etc. Requires `load_workspace`. Applies saved `.cs` from disk first. Empty `count: 0` includes agent guidance when the wrong `.csproj` is loaded.
-
-</details>
-
-<details>
-<summary><code>generate_test_method_stub</code> — Insert a test method stub into a test class.</summary>
-
-**Parameters:** `filePath`, `className`, `methodName`, `testFramework: string?` — `xunit` (default), `nunit`, `mstest`
-
-</details>
-
-<details>
-<summary><code>list_nuget_packages</code> — Installed NuGet packages as JSON per project.</summary>
-
-**Parameters:**
-- `workspacePath: string` — `.sln`, `.slnx`, `.csproj`, или каталог
-- `includeTransitive: bool` — default `true`
-- `includeOutdated: bool` — default `false` (adds `--outdated`)
-- `includeVulnerable: bool` — default `false` (adds `--vulnerable`)
-
-**Model guidance:** inspect dependency tree before editing `.csproj`; do not use `execute_dotnet_command` for package listing.
-
-</details>
-
-<details>
-<summary><code>list_outdated_packages</code> — Outdated NuGet packages as JSON.</summary>
-
-**Parameters:** `workspacePath: string` — shortcut for `list_nuget_packages` with `includeOutdated=true`, no transitive.
-
-</details>
-
-<details>
-<summary><code>add_package_reference</code> — Add PackageReference to .csproj.</summary>
-
-**Parameters:** `projectPath: string`, `packageId: string`, `version: string?`
-
-Verify id/version with `search_nuget_registry` first. Clears workspace cache — call `load_workspace` after.
-
-</details>
-
-<details>
-<summary><code>remove_package_reference</code> — Remove PackageReference from .csproj.</summary>
-
-**Parameters:** `projectPath: string`, `packageId: string`
-
-</details>
-
-<details>
-<summary><code>search_nuget_registry</code> — Search NuGet feeds for package id and latest stable version.</summary>
-
-**Parameters:**
-- `query: string` — package id or search term
-- `exactMatch: bool` — default `true` (exact id lookup)
-- `maxResults: int` — when `exactMatch=false`, default 10
-
-**Model guidance:** verify package exists before `dotnet add package`; never hallucinate package names or versions.
-
-</details>
-
-<details>
-<summary><code>execute_dotnet_command</code> — Runs dotnet {command} in the target directory.</summary>
-
-**Parameters:**
-- `command: string` (e.g., `test`, `add package Moq`)
-- `workingDirectory: string?` (defaults to current directory)
-</details>
-
-<details>
-<summary><code>run_format</code> — Runs dotnet format (apply or verify-only). Applied <code>.cs</code> are picked up by the next symbol search without reset.</summary>
-
-**Parameters:**
-- `workspacePath: string`
-- `verifyOnly: bool = false`
-</details>
-
-### Filesystem Utility & Search
-
-<details>
-<summary><code>list_directory_tree</code> — Builds a directory tree visualization (ignores bin, obj, .git).</summary>
-
-**Parameters:**
-- `directoryPath: string`
-- `maxDepth: int = 2`
-</details>
-
-<details>
-<summary><code>search_code</code> — Context-friendly ripgrep alternative (plain text or regex).</summary>
-
-**Parameters:**
-- `pattern: string`
-- `directoryPath: string? = null`
-- `includeExtensions: string? = ".cs"` — comma/semicolon list (`.cs,.csproj,.json`), or `*` for all files.
-- `useRegex: bool = false`
-- `caseSensitive: bool = false` — default case-insensitive; for leftover branding checks set `true`.
-- `maxResults: int = 50`
-- `maxScanSeconds: int = 20`
-
-**Agent note:** if your client exposes a built-in **`grep`** tool, prefer that for ad-hoc text search (never shell-driven grep). Use this MCP tool when you need search inside the workspace from the Roslyn MCP process.
-</details>
-
-<details>
-<summary><code>read_file_range</code> — Reads specific lines and prefixes them with original line numbers.</summary>
-
-**Parameters:**
-- `filePath: string`
-- `startLine: int` (1-based)
-- `lineCount: int`
-</details>
-
-<details>
-<summary><code>read_log_tail</code> — Context-safe log reader with optional keyword filtering.</summary>
-
-**Parameters:**
-- `filePath: string? = null` — omit to read the latest MCP server log (`logs/mcp-*.log`, same as `tail_tool_log`).
-- `lastNLines: int = 200`
-- `filterKeyword: string? = null` — e.g. `Failure`, `ERR`, `NU1903`.
-
-**Tip:** Prefer `tail_tool_log` for MCP diagnostics; use `filterKeyword` to avoid dumping entire logs.
-</details>
-
-<details>
-<summary><code>tail_tool_log</code> — Reads the latest server log `logs/mcp-*.log`.</summary>
-
-**Parameters:**
-- `lastNLines: int = 200`
-- `filterKeyword: string? = null`
-</details>
-
-<details>
-<summary><code>manage_agent_scratchpad</code> — Manages the agent's long-term memory across sessions.</summary>
-
-**Parameters:**
-- `action: string` (`read` | `write` | `append` | `clear`)
-- `content: string? = null`
-</details>
-
-### Roslyn Refactoring / Solution Insights
-
-<details>
-<summary><code>rename_symbol</code> — Semantic C# symbol rename via Roslyn with preview capability.</summary>
-
-**Parameters:**
-- `filePath: string`
-- `symbolName: string`
-- `newName: string`
-- `scope: string = "project"` — allowed: `project` | `solution`
-- `previewOnly: bool = true`
-
-**Scope:** C# symbols only (types/members/namespaces as symbols). For project folder / `.csproj` / solution graph use `rename_project`. For README/rules/URLs use host Grep/edit.
-</details>
-
-<details>
-<summary><code>rename_project</code> — Rename SDK-style project directory + `.csproj` and fix MSBuild graph.</summary>
-
-**Parameters:**
-- `projectPath: string` — path to `.csproj`
-- `newProjectName: string` — single path segment (e.g. `DupFinder.Core`)
-- `dryRun: bool = true`
-- `searchRoot: string? = null` — where to find sibling projects / `.sln` / `.slnx`
-
-**Behavior:** Moves identically named project folder + renames `.csproj`; updates `AssemblyName`/`RootNamespace` only when they equal the old project name; rewrites `ProjectReference` paths; updates `.sln` and `.slnx` entries. **SDK-style only.** Unsupported layouts hard-fail (no silent partial write). Does **not** rename C# namespaces/types, Docker, launchSettings, CI, or docs. After apply: `load_workspace` → `run_dotnet_build`.
 </details>
 
 <details>
@@ -771,53 +539,198 @@ Verify id/version with `search_nuget_registry` first. Clears workspace cache —
 **Behavior:** Collects public instance methods, properties, and events declared on the class; generates interface signatures; adds `: IInterface` to the class. Supports block and file-scoped namespaces. Partial classes are rejected.
 </details>
 
+### Build / Test
+
 <details>
-<summary><code>move_type_to_new_file</code> — Split top-level types into one-type-per-file.</summary>
+<summary><code>run_dotnet_build</code> — Runs dotnet build and returns a compact diagnostic summary.</summary>
 
 **Parameters:**
-- `filePath: string`
-- `typeName: string?` — omit to move all types whose name does not match the file name
-- `previewOnly: bool = false`
+- `workspacePath: string` — must be an existing **`.csproj`, `.sln`, or `.slnx` file** (not a directory).
+- `configuration: string? = null` — optional `dotnet build -c` (e.g. `Sit-Debug`, `Dit-Debug`). Omit to inherit the config `configuration`.
+- `noIncremental: bool = true` — pass `--no-incremental` on every build step (default). Set `false` only if you explicitly accept MSBuild up-to-date caching.
+- `platform: string? = null` — optional `-p:Platform=` (e.g. `x64`). Omit to inherit the config `platform`.
 
-**Behavior:** Creates `{TypeName}.cs` next to the source file (SDK-style projects pick up new files automatically), copies usings/namespace, removes the type from the original file. Partial types are rejected.
+**Behavior:** Pins SDK and runs a multi-step probe (minimal → restore escalate → normal/detailed when needed). Effective exit = last `dotnet build` step. Reports `MCP_MSBUILD_SDK_MISMATCH` on SDK conflicts. Use AFTER editing to verify compile.
 </details>
 
 <details>
-<summary><code>list_projects</code> — Shows projects in the workspace (Name, TFM, Output, Refs).</summary>
+<summary><code>run_dotnet_test</code> — Runs dotnet test with condensed failure details.</summary>
 
 **Parameters:**
-- `workspacePath: string? = null`
+- `workspacePath: string`
+- `timeoutSeconds: int = 300` — process timeout; `0` disables (not recommended). Raise for long integration tests.
+- `noBuild: bool = false` — pass `--no-build` (after a successful `run_dotnet_build`).
+- `noRestore: bool = false` — pass `--no-restore`.
+- `configuration: string? = null` — optional `dotnet test -c` (e.g. `Sit-Debug`). Omit to inherit the config `configuration`.
+- `platform: string? = null` — optional `-p:Platform=`. Omit to inherit the config `platform`.
+
+**Behavior:** When `noBuild=false`, compiles with a separate `dotnet build` then runs `dotnet test --no-build --no-restore`. Returns a clean passed/failed summary; kills the process tree on timeout.
+</details>
+
+<details>
+<summary><code>run_specific_test</code> — Run dotnet test filtered to one class and/or method.</summary>
+
+**Parameters:**
+- `workspacePath: string`
+- `className: string?` — e.g. `UserServiceTests` (simple or fully qualified)
+- `methodName: string?` — e.g. `CreateUser_WhenValid_ReturnsOk`
+- `timeoutSeconds: int = 300` — same as `run_dotnet_test`.
+- `noBuild: bool = false` — pass `--no-build`.
+- `noRestore: bool = false` — pass `--no-restore`.
+- `configuration: string? = null` — optional `dotnet test -c` (same as `run_dotnet_test`).
+
+At least one of `className` or `methodName` is required. The tool builds a VSTest-safe `--filter` internally (`FullyQualifiedName~…`) — do not use a raw bash command or hand-written filters. When the workspace is loaded, Roslyn resolves the type/method FQN for precise filtering. Use this for TDD red/green loops.
+</details>
+
+<details>
+<summary><code>run_dotnet_run</code> — Runs `dotnet run --project <csproj>` with pinned SDK.</summary>
+
+**Parameters:**
+- `workspacePath: string` — a `.csproj` (executable/worker project).
+- `arguments: string?` — optional arguments after `--`.
+- `workingDirectory: string?` — optional working directory override.
+- `timeoutSeconds: int = 120` — `0` = no timeout.
+- `maxStdoutChars: int = 8000`, `maxStderrChars: int = 2000`
+
+Returns separate stdout/stderr with size limits (stderr tail for progress). Do not use a raw `dotnet run` shell command for project runs.
+</details>
+
+<details>
+<summary><code>run_format</code> — Runs dotnet format (apply or verify-only).</summary>
+
+**Parameters:**
+- `workspacePath: string`
+- `verifyOnly: bool = false`
+
+Formatted `.cs` on disk are picked up by the next symbol search (disk-sync) automatically.
+</details>
+
+<details>
+<summary><code>get_test_list</code> — List test methods in loaded solution (JSON; saved <code>.cs</code> applied first).</summary>
+
+**Parameters:** `maxResults: int = 200`
+
+Detects Fact/Theory/TestMethod/etc. Empty `count: 0` is an agent signal that the wrong `.csproj` may be loaded — reload the test `.sln`/`.slnx` via `reload` (or set `workspace-path`).
+</details>
+
+### Projects / NuGet
+
+<details>
+<summary><code>list_projects</code> — Shows projects in the workspace (Name, TFM, OutputType, Refs).</summary>
+
+**Parameters:**
+- `workspacePath: string? = null` — when provided, loads/reloads the workspace before listing.
 </details>
 
 <details>
 <summary><code>get_project_graph</code> — Builds a project-to-project dependency graph.</summary>
 
 **Parameters:**
-- `workspacePath: string? = null`
+- `workspacePath: string? = null` — when provided, loads/reloads the workspace before building the graph.
 </details>
 
-### Server lifecycle
+<details>
+<summary><code>list_nuget_packages</code> — Installed NuGet packages as JSON per project.</summary>
+
+**Parameters:**
+- `workspacePath: string` — `.sln`, `.slnx`, `.csproj`, or directory
+- `includeTransitive: bool` — default `true`
+- `includeOutdated: bool` — default `false` (adds `--outdated`)
+- `includeVulnerable: bool` — default `false` (adds `--vulnerable`)
+
+**Model guidance:** inspect the dependency tree before editing `.csproj`; do not list packages via a raw bash `dotnet list` command.
+</details>
 
 <details>
-<summary><code>get_mcp_server_info</code> — Binary path, tool count, logs, workspace state.</summary>
+<summary><code>list_outdated_packages</code> — Outdated NuGet packages as JSON.</summary>
+
+**Parameters:** `workspacePath: string` — shortcut for `list_nuget_packages` with `includeOutdated=true`, no transitive.
+</details>
+
+<details>
+<summary><code>search_nuget_registry</code> — Search NuGet feeds for package id and latest stable version.</summary>
+
+**Parameters:**
+- `query: string` — package id or search term
+- `exactMatch: bool` — default `true` (exact id lookup)
+- `maxResults: int` — when `exactMatch=false`, default 10
+
+**Model guidance:** verify a package exists before adding it; never hallucinate package names or versions.
+</details>
+
+<details>
+<summary><code>run_nuget_audit</code> — Runs `dotnet list package --vulnerable` and returns a compact vulnerability table.</summary>
+
+**Parameters:**
+- `workspacePath: string`
+- `maxEntries: int = 40`
+</details>
+
+<details>
+<summary><code>add_package_reference</code> — Add PackageReference to .csproj.</summary>
+
+**Parameters:** `projectPath: string`, `packageId: string`, `version: string?`
+
+Verify id/version with `search_nuget_registry` first. Clears the in-memory workspace — use `reload` after.
+</details>
+
+<details>
+<summary><code>remove_package_reference</code> — Remove PackageReference from .csproj.</summary>
+
+**Parameters:** `projectPath: string`, `packageId: string`
+
+Clears the in-memory workspace — use `reload` after.
+</details>
+
+<details>
+<summary><code>rename_project</code> — Rename SDK-style project directory + `.csproj` and fix the MSBuild graph.</summary>
+
+**Parameters:**
+- `projectPath: string` — path to `.csproj`
+- `newProjectName: string` — single path segment (e.g. `DupFinder.Core`)
+- `dryRun: bool = true`
+- `searchRoot: string? = null` — where to find sibling projects / `.sln` / `.slnx`
+
+**Behavior:** Moves the identically named project folder + renames `.csproj`; updates `AssemblyName`/`RootNamespace` only when they equal the old project name; rewrites `ProjectReference` paths; updates `.sln` and `.slnx` entries. **SDK-style only.** Does **not** rename C# namespaces/types, Docker, launchSettings, CI, or docs. After apply: `reload` → `run_dotnet_build`.
+</details>
+
+### Search / Miscellaneous
+
+<details>
+<summary><code>search_code</code> — Context-friendly ripgrep alternative (plain text or regex).</summary>
+
+**Parameters:**
+- `pattern: string`
+- `directoryPath: string? = null`
+- `includeExtensions: string? = ".cs"` — comma/semicolon list (`.cs,.csproj,.json`), or `*` for all files.
+- `useRegex: bool = false`
+- `caseSensitive: bool = false` — default case-insensitive; for leftover branding checks set `true`.
+- `maxResults: int = 50`
+- `maxScanSeconds: int = 20`
+
+When the number of matches exceeds the cap, the full result (same markdown format) is written to a temp file and a short response (count + path + file summary) is returned — nothing is silently truncated.
+
+**Agent note:** if your client exposes a built-in **`grep`** tool, prefer that for ad-hoc text search (never shell-driven grep). Use this MCP tool when you need search from within the Roslyn MCP process.
+</details>
+
+<details>
+<summary><code>get_mcp_server_info</code> — Binary path, tool count, logs, loaded config path(s), workspace state.</summary>
 
 **Parameters:** *(none)*
 
-Use after `dotnet publish` to verify the MCP host picked up the new binary (expect **56** tools).
-
+Use after `dotnet publish` to verify the MCP host picked up the new binary (expect **40** tools).
 </details>
 
 <details>
 <summary><code>stop_mcp_server</code> — Stops this MCP host process after returning (for rebuilding the server binary; restart MCP in the IDE). Not for refreshing saved source — that syncs automatically.</summary>
 
 **Parameters:** *(none)*
-
 </details>
 
 ### Prompts
 
 <details>
-<summary><code>RefactoringAssistantPrompt</code> — Short system-style instructions for C# refactoring workflows.</summary>
+<summary><code>RefactoringAssistantPrompt</code> — Short system-style instructions for C# refactoring workflows (uses host read/write/edit/bash for file edits).</summary>
 
 **Parameters:**
 - `focus: string? = null`
@@ -837,8 +750,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 Сервер работает по `stdio` и регистрирует инструменты через MCP C# SDK, фокусируясь на:
 - работе с `*.sln`/`*.slnx`/`*.csproj` через Roslyn;
-- безопасных операциях чтения/правки файлов;
-- запуске `dotnet build` / `dotnet test` / произвольных `dotnet` команд;
+- безопасных операциях чтения/правки файлов через Roslyn;
+- запуске `dotnet build` / `dotnet test`;
 - компактных ответах для LLM и подробных логах.
 
 ## ⚠️ Предупреждение о безопасности
@@ -873,6 +786,8 @@ dotnet publish RoslynMcpServer.csproj -c Release -r win-x64
 Укажите абсолютный путь (примеры лежат в `mcp.json` и `.cursor/mcp.json`).
 Опционально добавьте `env` с `ROSLYN_MCP_WORKSPACE` — **корень репозитория** (каталог с `global.json`), чтобы MSBuild.Locator и `run_dotnet_build` использовали тот же SDK, что и решение.
 
+По умолчанию workspace берётся из конфига **`RoslynMcp.jsonc`** (мерж exe-каталога и cwd, cwd wins) и грузится **лениво** — первый семантический вызов после старта может занять минуты (`timeout` MCP-хоста ≥ 600000 мс). Подробности — в английской секции **Config** выше.
+
 **OpenCode (`install2opencode.ps1`):**
 
 После `dotnet publish` в каталоге publish лежат [`install2opencode.ps1`](install2opencode.ps1) и [`AGENTS.md.sample`](AGENTS.md.sample) рядом с `RoslynMcpServer.exe`.
@@ -889,7 +804,7 @@ cd D:\Devel\YourApp
 - создаёт или обновляет **`opencode.json`**, регистрируя `RoslynMcpServer` как локальный MCP-сервер (`type: local`, `enabled: true`, **`timeout`: `600000`** мс = 10 минут);
 - создаёт или дополняет **`AGENTS.md`**: если правил Roslyn MCP ещё нет, подмешивает текст из `AGENTS.md.sample` (новый файл или append к существующему).
 
-**Таймаут MCP-хоста OpenCode:** по умолчанию OpenCode обрывает MCP `tools/call` примерно через **60 секунд**. Это **не** аргумент тула `timeoutSeconds` у `run_dotnet_test` / `run_dotnet_run`. Без увеличения host timeout длинные build/test падают с `McpError: MCP error -32001: Request timed out` (~60 с), даже если передать `timeoutSeconds: 900`. Укажите `"timeout": 600000` (или больше) в записи сервера — см. [`opencode.json.sample`](opencode.json.sample). `install2opencode.ps1` проставляет это сам. Если старая сборка OpenCode игнорирует per-server `timeout`, добавьте также `"experimental": { "mcp_timeout": 600000 }`.
+**Таймаут MCP-хоста OpenCode:** по умолчанию OpenCode обрывает MCP `tools/call` примерно через **60 секунд**. Это **не** аргумент тула `timeoutSeconds` у `run_dotnet_test` / `run_dotnet_run`. Без увеличения host timeout длинные build/test и **первый ленивый load workspace** падают с `McpError: MCP error -32001: Request timed out` (~60 с), даже если передать `timeoutSeconds: 900`. Укажите `"timeout": 600000` (или больше) в записи сервера — см. [`opencode.json.sample`](opencode.json.sample). `install2opencode.ps1` проставляет это сам. Если старая сборка OpenCode игнорирует per-server `timeout`, добавьте также `"experimental": { "mcp_timeout": 600000 }`.
 
 Пример блока сервера:
 
@@ -911,7 +826,7 @@ cd D:\Devel\YourApp
 
 ## История agent-tools по версиям
 
-См. английский раздел [Agent tools by version](#agent-tools-by-version) (v1.0.13–v1.1.0). Правила агента — [`AGENTS.md.sample`](AGENTS.md.sample).
+См. английский раздел [Agent tools by version](#agent-tools-by-version) (v1.0.13–v1.2.0). Правила агента — [`AGENTS.md.sample`](AGENTS.md.sample).
 
 ## Cursor: как заставить агента реально вызывать tools
 
@@ -925,12 +840,13 @@ cd D:\Devel\YourApp
 
 Кратко для модели:
 
-- после `load_workspace` объявления C# — MCP `find_symbol_definition` / `find_usages`, не текстовый поиск и не выдуманный `search`
+- workspace — из `RoslynMcp.jsonc` (`workspace-path`), ленивая загрузка; первый вызов после старта — минуты; `reload` после build / `.csproj`
 - нет target `Compile` при load — повторить с `targetFramework` (inner TFM); это не SDK mismatch
 - VS 2026 BuildHost / `XMakeElements` — это не SDK mismatch; нужен MCP 1.0.35+ или один SDK-style `.csproj`
+- C# объявления — MCP `find_symbol_definition` / `find_usages`, не текстовый поиск и не выдуманный `search`
 - текст по файлам — host Grep IDE, не shell grep
 - сборка/тесты — только MCP `run_dotnet_build` / `run_dotnet_test`
-- запись файлов — IDE: нативные правки; headless: MCP `apply_patch` / AST
+- чтение/запись файлов — host `read`/`write`/`edit`; правки AST (члены, тела методов, usings) — MCP `add_member` / `update_method_body` / `organize_usings` / `implement_interface` / `extract_interface`
 - полный текст политики — в `AGENTS.md.sample`
 
 ## Логи
@@ -942,71 +858,84 @@ cd D:\Devel\YourApp
 ## Reference: MCP Tools
 
 **Имена параметров в JSON:**
-- `filePath` — один файл (чтение/правка/диагностика/логи).
-- `directoryPath` — корневая папка (`list_directory_tree`, опционально корень для `search_code`).
+- `filePath` — один `.cs` файл (семантика/навигация/правки AST).
+- `path` — файл `.cs` или каталог для `get_code_skeleton` (абсолютный путь; с диска, workspace не обязателен).
 - `includeExtensions` — опциональный фильтр расширений для `search_code` (по умолчанию `.cs`; `*` = все файлы).
 - `caseSensitive` — опционально для `search_code` (по умолчанию `false`; для leftover branding — `true`).
-- `workspacePath` — `.sln` / `.slnx` / `.csproj` (и иногда каталог): `load_workspace`, `run_dotnet_test`, `run_specific_test`, `run_format`, опциональная перезагрузка в `list_projects` / `get_project_graph`. **`run_dotnet_build` принимает только путь к файлу `.csproj`, `.sln` или `.slnx`, не каталог.** Для multi-config solution предпочитайте `.sln`/`.slnx`.
+- `workspacePath` — `.sln` / `.slnx` / `.csproj` (и иногда каталог): `run_dotnet_test`, `run_specific_test`, `run_format`, `list_nuget_packages`, `run_nuget_audit`, `list_outdated_packages`, опциональная перезагрузка в `list_projects` / `get_project_graph`. **`run_dotnet_build` / `run_dotnet_run` принимают только путь к файлу `.csproj`, `.sln` или `.slnx`, не каталог.** Для multi-config solution предпочитайте `.sln`/`.slnx`.
 - `symbolName` — идентификатор C# для `find_symbol_definition`, `find_symbol_references`, `find_usages` и `find_implementations` (точное имя; регистр не важен для definition/usages/implementations).
 - `diagnosticId` — id компилятора/анализатора из `get_diagnostics_for_file` (например `CS0246`) для `get_code_fixes` / `apply_code_fix`.
 - `fixIndex` — индекс (0-based) из `get_code_fixes` для `apply_code_fix`.
-- `path` — файл `.cs` или каталог для `get_code_skeleton` (абсолютный путь; с диска, workspace не обязателен).
 
-Зарегистрировано **56** инструментов (список ниже) и **1** MCP-промпт (`RefactoringAssistantPrompt`).
+Когда tool принимает `filePath`, относительные значения резолвятся относительно корня загруженного workspace; если workspace не загружен — `Environment.CurrentDirectory`. Workspace берётся из конфига `RoslynMcp.jsonc` (`workspace-path`) и грузится **лениво** — первый семантический вызов после старта может занять минуты (поднимите host MCP `timeout` до ≥ 600000 мс).
 
-### Workspace / Roslyn
+Зарегистрировано **40** инструментов (список ниже) и **1** MCP-промпт (`RefactoringAssistantPrompt`).
+
+### Workspace
 
 <details>
-<summary><code>load_workspace</code> — Загружает .sln/.slnx/.csproj в MSBuildWorkspace.</summary>
+<summary><code>reload</code> — Перезагружает MSBuildWorkspace из конфига или явных аргументов.</summary>
 
 **Параметры:**
-- `workspacePath: string` — файл `.sln`, `.slnx` или `.csproj` (не каталог). Для multi-config — предпочтительно solution.
-- `configuration: string?` — опционально MSBuild `Configuration` (например `Sit-Debug`, `kart`). Наследуют build/test, если не передали `-c`.
-- `platform: string?` — опционально MSBuild `Platform` (`Any CPU` → `AnyCPU`).
-- `targetFramework: string?` — опционально MSBuild `TargetFramework` (например `net10.0`). Нужен, когда в решении `TargetFrameworks` (inner TFM с target `Compile`). Build/test это не наследуют.
+- `workspacePath: string?` — опционально `.sln`, `.slnx` или `.csproj` (не каталог). Если не указан — берётся из конфига `workspace-path`.
+- `configuration: string?` — опционально MSBuild `Configuration` (например `Sit-Debug`). Если не указан — из конфига `configuration`.
+- `platform: string?` — опционально MSBuild `Platform` (`Any CPU` → `AnyCPU`). Если не указан — из конфига `platform`.
+- `targetFramework: string?` — опционально MSBuild `TargetFramework` (например `net10.0`). Если не указан — из конфига `target-framework`.
 
-**Поведение:** abort хоста mid-load → **Workspace Load Cancelled (client abort)** (поднять MCP timeout; это не ошибка MSBuild). После успешного load **сохранённые** `.cs` вотчатся и подмешиваются в поиск символов (несохранённый буфер игнорируется). Смена `.csproj`/`.sln`/`Directory.Build.props` сбрасывает кэш следующего `load_workspace`. Предупреждения restore (`NU1701` TFM-compat, audit, prune) и design-time MSBuild (deprecation `IncludeOpenAPIAnalyzers`/ASPDEPR007, mismatch архитектуры, analyzer без metadata) не валят load даже в обёртке `Msbuild failed when processing the file`; настоящие ошибки MSBuild/SDK (`error NU|MSB|NETSDK`) — валят. Пустой `TargetFramework` (`ResolvePackageAssets`) — отдельный fail: повторить с IDE-конфигом или это Bazel-generated sln, который MSBuildWorkspace не открывает. Нет target `Compile` (outer CrossTargeting) — отдельный fail: повторить с `targetFramework` из отчёта / `Directory.Build.props`; `dotnet build` при этом может быть зелёным. Падение VS 2026 / MSBuild 18 BuildHost (`XMakeElements`) — отдельный fail, **не** `MCP_MSBUILD_SDK_MISMATCH`; нужен MCP 1.0.35+ или один SDK-style `.csproj`.
+**Поведение:** путь и свойства MSBuild по умолчанию из `RoslynMcp.jsonc`; аргументы переопределяют конфиг. Вызывайте после `dotnet build` (generated `obj`), правок `.csproj`/`.sln`/`Directory.Build.props` или смены проекта. Обычные сохранения `.cs` не требуют reload (disk-sync). Первая загрузка большого решения может занять минуты — поднимите host MCP timeout.
 </details>
 
-<details>
-<summary><code>reset_workspace</code> — Сбрасывает in-memory MSBuildWorkspace и кэш решения. После сборки (generated в <code>obj</code>, refs) вызови снова <code>load_workspace</code>. Сохранённые <code>.cs</code> с v1.1.0 подхватываются без reset.</summary>
-
-**Параметры:** *(нет)*
-</details>
+### Семантика / Навигация
 
 <details>
-<summary><code>get_file_content</code> — Читает файл целиком с диска (возвращает безопасный preview для больших файлов).</summary>
+<summary><code>find_symbol_definition</code> — Семантический поиск: где объявлен тип или член (FQN + file:line:col) в загруженном solution.</summary>
 
 **Параметры:**
-- `filePath: string`
+- `symbolName: string` — имя класса, интерфейса, struct, enum или члена, либо точный FQN.
+- `maxResults: int?`, `preview: bool?`
+
+**Поведение:** `symbolName` с `.` трактуется как точный FQN (без fallback на простое имя); при отсутствии совпадения ошибка перечисляет кандидатов FQN. Возвращает display-строку символа, **полное имя (FQN)** и **1-based file:line:col**. Для «где **объявлен** X?» не используй текстовый поиск и не `grep`/`findstr`/`Select-String` из терминала. Для произвольного текста по файлам — встроенный **`grep`** среды.
 </details>
 
 <details>
-<summary><code>get_class_skeleton</code> — Возвращает структуру C# файла без тел методов (индекс workspace после saved <code>.cs</code>).</summary>
+<summary><code>find_usages</code> — Ссылки по всему solution: файл, 1-based line:col (и опционально текст строки).</summary>
 
 **Параметры:**
-- `filePath: string`
+- `symbolName: string` — объявленное имя типа или члена, либо точный FQN.
+- `maxResults: int?`, `preview: bool?`
+
+**Поведение:** сначала подмешиваются сохранённые `.cs` с диска. Возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам. `symbolName` с `.` — точный FQN (без fallback). Если несколько одноимённых символов — выводятся все (сводная таблица группирует ссылки по FQN); сузьте имя или передайте FQN. По умолчанию только позиции; `preview=true` добавляет текст строки.
 </details>
 
 <details>
-<summary><code>get_code_skeleton</code> — Парсит `.cs` с диска и возвращает полный синтаксис файла с вырезанными телами (сигнатуры + пустые блоки); опционально каталог (до 20 файлов, пропуск сегментов пути <code>bin</code>/<code>obj</code>/<code>Test</code>/<code>Tests</code>).</summary>
-
-**Параметры:**
-- `path: string` — абсолютный путь к одному файлу `.cs` или к папке для рекурсивного обхода.
-
-**Заметка:** `load_workspace` не требуется. Для файла из уже загруженного solution по-прежнему уместен `get_class_skeleton`.
-**Важно:** этот tool работает только с путём к файлу/папке (`path`). Не передавайте сюда `assemblyName` / `typeName`; для внешних/NuGet-сборок используйте `decompile_type` / `get_decompiled_class_skeleton`.
-</details>
-
-<details>
-<summary><code>get_method_body</code> — Возвращает код одного метода в именованном классе.</summary>
+<summary><code>find_symbol_references</code> — Ищет использования класса/интерфейса/метода, когда известен файл объявления.</summary>
 
 **Параметры:**
 - `filePath: string`
-- `className: string`
-- `methodName: string`
+- `symbolName: string?` — имя объявления (class/interface/method/property/field/event/constructor); игнорируется, если заданы `line`/`column`
+- `line: int?` / `column: int?` — 1-based позиция на объявлении *или* на usage (вместе) — точный выбор символа
+- `maxResults: int?`, `preview: bool?`
 
-**Разрешение пути:** `filePath` может быть абсолютным или относительным к workspace. После `load_workspace` путь вида `src/...` считается от каталога загруженного `.sln`/`.slnx`/`.csproj`.
+**Поведение:** без позиции и при нескольких одноимённых декларациях в файле — ошибка со списком кандидатов (FQN + line:col), «первый выиграл» не используется. Возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам.
+</details>
+
+<details>
+<summary><code>find_implementations</code> — Классы, реализующие интерфейс, или наследники базового типа.</summary>
+
+**Параметры:**
+- `symbolName: string` — имя интерфейса или базового класса, либо точный FQN (например `IRepository`, `BaseController`)
+- `transitive: bool = true` — при `true` включает косвенные реализации / наследников по иерархии
+- `maxResults: int?`, `preview: bool?`
+
+**Поведение:** для **интерфейсов** — Roslyn `FindImplementationsAsync`; для **классов/struct** — `FindDerivedClassesAsync`. Каждый результат — `path:line:col`. Не используйте текстовый поиск или `find_usages` для «кто реализует X?» / «кто наследует Y?».
+</details>
+
+<details>
+<summary><code>get_call_graph</code> — Кто вызывает метод и что вызывает он (call graph; saved <code>.cs</code> подмешиваются).</summary>
+
+**Параметры:** `filePath`, `className: string?` / `methodName: string?` (вместе, если не заданы `line`/`column`), `line: int?` / `column: int?` — 1-based позиция на объявлении метода или вызове (вместе) — альтернатива `className`+`methodName`, `maxNodes: int = 25` (при превышении полный граф пишется во временный файл), `includeExternalCallees: bool = false`
+
+**Поведение:** через `SymbolFinder.FindCallersAsync` и анализ вызовов в теле. Для расследования багов — вместо массовой загрузки тел через `get_method_body`.
 </details>
 
 <details>
@@ -1015,7 +944,7 @@ cd D:\Devel\YourApp
 **Параметры:**
 - `filePath: string`
 
-**Вывод:** для каждой диагностики — severity, **строка**, **колонка**, id (например `CS0246`, `IDE0001`) и сообщение. Эти значения нужны для `get_code_fixes`.
+**Вывод:** для каждой диагностики — severity, **строка**, **колонка** (1-based), id (например `CS0246`, `IDE0001`) и сообщение. Эти значения нужны для `get_code_fixes`.
 </details>
 
 <details>
@@ -1027,7 +956,7 @@ cd D:\Devel\YourApp
 - `line: int` — номер строки (1-based), где начинается диагностика
 - `column: int = 1` — колонка (1-based, из вывода diagnostics)
 
-**Результат:** пронумерованные фиксы (`fixIndex`, с 0) с заголовками вроде «Add using …», «Implement interface» и т.д. Не более 20 фиксов за вызов.
+**Результат:** пронумерованные фиксы (`fixIndex`, с 0). Не более 20 фиксов за вызов.
 
 **Workflow:** `get_diagnostics_for_file` → `get_code_fixes` → `apply_code_fix`. Не придумывайте правку вручную, если Roslyn уже предлагает fix.
 </details>
@@ -1043,16 +972,61 @@ cd D:\Devel\YourApp
 - `column: int = 1`
 - `previewOnly: bool = false` — при `true` только diff-превью без записи на диск
 
-**Поведение:** записывает изменённые файлы на диск и обновляет in-memory workspace. После применения вызовите `get_diagnostics_for_file` для проверки.
-
-**Заметка:** `fixIndex` действителен только для той же пары `filePath` / `diagnosticId` / `line` / `column` в рамках сессии (файл не должен меняться между `get_code_fixes` и `apply_code_fix`).
+**Поведение:** записывает изменённые файлы на диск и обновляет in-memory workspace. `fixIndex` действителен только для той же пары `filePath` / `diagnosticId` / `line` / `column` в рамках сессии.
 </details>
+
+<details>
+<summary><code>rename_symbol</code> — Семантический rename C# символа через Roslyn с предпросмотром.</summary>
+
+**Параметры:**
+- `filePath: string`
+- `symbolName: string`
+- `newName: string`
+- `line: int?` / `column: int?` — 1-based позиция на объявлении или usage (вместе) — точный выбор символа
+- `scope: string = "project"` — допустимо: `project` | `solution`
+- `previewOnly: bool = true`
+
+**Поведение:** без позиции и при нескольких одноимённых декларациях в файле — ошибка со списком кандидатов (FQN + line:col). Только C# символы (типы/члены/namespace). Для папки проекта / `.csproj` / графа solution — `rename_project`. Для README/rules/URL — host Grep/edit.
+</details>
+
+### Скелеты / Чтение
+
+<details>
+<summary><code>get_class_skeleton</code> — Возвращает структуру C# файла без тел методов (индекс workspace после saved <code>.cs</code>).</summary>
+
+**Параметры:**
+- `filePath: string`
+
+Возвращает namespace, типы, свойства и сигнатуры методов (тела опущены). Для файла с диска без workspace (или чтобы не трогать индекс) — `get_code_skeleton`; для типов из NuGet/DLL — `get_decompiled_class_skeleton`.
+</details>
+
+<details>
+<summary><code>get_code_skeleton</code> — Парсит `.cs` с диска и возвращает структурный скелет с вырезанными телами (workspace не требуется).</summary>
+
+**Параметры:**
+- `path: string` — абсолютный путь к одному файлу `.cs` или к папке для рекурсивного обхода (до 20 файлов; пропуск сегментов пути `bin`/`obj`/`Test`/`Tests`).
+
+**Важно:** этот tool работает только с путём к файлу/папке. Не передавайте `assemblyName` / `typeName`; для внешних/NuGet-сборок используйте `decompile_type` / `get_decompiled_class_skeleton`.
+</details>
+
+<details>
+<summary><code>get_method_body</code> — Возвращает код одного метода в именованном классе (чтение с диска).</summary>
+
+**Параметры:**
+- `filePath: string`
+- `className: string`
+- `methodName: string`
+
+**Разрешение пути:** `filePath` может быть абсолютным или относительным к workspace. Берётся первый по совпадению (без выбора перегрузки) — для перегрузок используйте `update_method_body` с `parameterTypes`. Предпочтительнее чтения всего файла для крупных исходников.
+</details>
+
+### Decompile (ILSpy)
 
 <details>
 <summary><code>explore_assembly</code> — Декомпилирует подключенную внешнюю сборку (NuGet/сторонний DLL) через ILSpy и возвращает структуру namespaces с видимыми top-level class/interface.</summary>
 
 **Параметры:**
-- `assemblyName: string?` — имя без `.dll` (через workspace после `load_workspace`).
+- `assemblyName: string?` — имя без `.dll` (через workspace MetadataReferences → deps.json → NuGet).
 - `assemblyPath: string?` — абсолютный путь к `.dll` (например кэш NuGet). Нужен **один** из параметров.
 </details>
 
@@ -1083,84 +1057,17 @@ cd D:\Devel\YourApp
 - `methodName: string`
 </details>
 
-<details>
-<summary><code>find_symbol_references</code> — Ищет использования класса/интерфейса/метода по solution.</summary>
-
-**Параметры:**
-- `filePath: string`
-- `symbolName: string`
-</details>
+### Правки (AST)
 
 <details>
-<summary><code>find_symbol_definition</code> — Семантический поиск: где объявлен тип или член (путь к файлу и строка) в загруженном solution.</summary>
-
-**Параметры:**
-- `symbolName: string` — имя класса, интерфейса, struct, enum или члена (например `IRunCommand`).
-
-**Для модели:** после `load_workspace` для «где **объявлен** X?» используй этот tool — не текстовый поиск и не выдуманный tool вроде `search`. Для произвольного текста по файлам — встроенный **`grep`** среды (IDE), не `bash`/PowerShell с grep. Так не лезем в `bin/`/`obj/` и опираемся на Roslyn. **Сохранённые** `.cs` (IDE/git) подмешиваются до поиска; несохранённый буфер игнорируется — `reset_workspace` для обычных save не нужен.
-</details>
-
-<details>
-<summary><code>find_usages</code> — Ссылки по всему solution: файл, строка и текст строки исходника (не более 30 вхождений).</summary>
-
-**Параметры:**
-- `symbolName: string` — объявленное имя типа или члена (например `Guard`, `Format`).
-
-**Поведение:** нужен `load_workspace`. Сначала подмешиваются сохранённые `.cs` с диска. Поиск объявлений через Roslyn; при нескольких символах с одним именем выбирается один «основной» (типы предпочтительнее методов). Если известен файл объявления, точнее может быть `find_symbol_references`.
-</details>
-
-<details>
-<summary><code>find_implementations</code> — Классы, реализующие интерфейс, или наследники базового типа.</summary>
-
-**Параметры:**
-- `symbolName: string` — имя интерфейса или базового класса (например `IRepository`, `BaseController`)
-- `transitive: bool = true` — при `true` включает косвенные реализации / наследников по иерархии
-
-**Поведение:** нужен `load_workspace`. Сначала saved `.cs` с диска. Для **интерфейсов** — Roslyn `FindImplementationsAsync`; для **классов/struct** — `FindDerivedClassesAsync`. Каждый тип с путём к файлу и строкой (не более 50). Не используйте текстовый поиск или `find_usages` для «кто реализует X?» / «кто наследует Y?».
-
-**Для модели:** после `load_workspace` — вместо grep или анализа usages, когда нужна OOP-иерархия.
-</details>
-
-<details>
-<summary><code>get_call_graph</code> — Кто вызывает метод и что вызывает он (call graph).</summary>
-
-**Параметры:** `filePath`, `className`, `methodName`, `maxNodes: int = 25`, `includeExternalCallees: bool = false`
-
-Нужен `load_workspace`. Для расследования багов — вместо массовой загрузки тел через `get_method_body`.
-
-</details>
-
-### File Editing
-
-<details>
-<summary><code>update_file_content</code> — Полная перезапись файла. Автоматически создает отсутствующие каталоги. Новый <code>.cs</code> в загруженном проекте попадает в индекс на следующем поиске символов.</summary>
-
-**Параметры:**
-- `filePath: string`
-- `content: string`
-</details>
-
-<details>
-<summary><code>add_using</code> — Добавить using через Roslyn AST.</summary>
-
-**Параметры:**
-- `filePath: string`
-- `namespaceName: string` — например `System.Linq`
-
-Требует `load_workspace`. Для импортов — вместо `apply_patch`.
-
-</details>
-
-<details>
-<summary><code>add_method_to_class</code> — Вставить метод в класс через Roslyn AST.</summary>
+<summary><code>add_member</code> — Вставить метод, property или field в класс через Roslyn DocumentEditor.</summary>
 
 **Параметры:**
 - `filePath: string`
 - `className: string` — top-level класс
-- `methodSource: string` — объявление метода (модификаторы, сигнатура, тело)
+- `memberSource: string` — полное объявление члена: метод (модификаторы, сигнатура, тело), property или field
 
-Парсит C#, вставляет через DocumentEditor, форматирует. Для новых методов — вместо `apply_patch`.
-
+Парсит объявление, вставляет в правильное место (группировка по виду члена, с учётом регионов) через Roslyn `DocumentEditor.AddMember`, форматирует. Поддерживаются только method / property / field (не event, constructor, record, вложенные типы). Workspace — из конфига (`workspace-path`), ленивая загрузка. Для новых членов — вместо ручного host-патча.
 </details>
 
 <details>
@@ -1173,281 +1080,19 @@ cd D:\Devel\YourApp
 - `newBody: string` — только statements или блок `{ ... }`
 - `parameterTypes: string[]?` — например `["string", "int"]` для перегрузок; **обязателен** при нескольких overload
 
-**Поведение:** находит метод, парсит тело в `BlockSyntax`, заменяет block/expression body, проверяет syntax errors до записи, форматирует. Пара с `get_method_body` — вместо `apply_patch` для правок только тела.
-
-</details>
-
-<details>
-<summary><code>remove_using</code> — Удалить using через Roslyn AST.</summary>
-
-**Параметры:** `filePath`, `namespaceName`
-
+**Поведение:** находит метод, парсит тело в `BlockSyntax`, заменяет block/expression body, проверяет syntax errors до записи, форматирует. Пара с `get_method_body` — вместо host-правки для правок только тела.
 </details>
 
 <details>
 <summary><code>organize_usings</code> — Сортировка и удаление неиспользуемых using.</summary>
 
 **Параметры:** `filePath`, `removeUnused: bool = true`
-
-</details>
-
-<details>
-<summary><code>add_property_to_class</code> — Вставить property через Roslyn AST.</summary>
-
-**Параметры:** `filePath`, `className`, `propertySource`
-
-</details>
-
-<details>
-<summary><code>add_field_to_class</code> — Вставить field через Roslyn AST.</summary>
-
-**Параметры:** `filePath`, `className`, `fieldSource`
-
-</details>
-
-<details>
-<summary><code>remove_member</code> — Удалить член класса по имени.</summary>
-
-**Параметры:** `filePath`, `className`, `memberName`
-
-</details>
-
-<details>
-<summary><code>add_type_to_class_bases</code> — Добавить базовый класс или интерфейс в base list.</summary>
-
-**Параметры:** `filePath`, `className`, `typeName`
-
 </details>
 
 <details>
 <summary><code>implement_interface</code> — Реализовать интерфейс (stubs NotImplemented).</summary>
 
 **Параметры:** `filePath`, `className`, `interfaceName`
-
-</details>
-
-<details>
-<summary><code>apply_patch</code> — Инструмент точечного поиска-замены по фрагменту.</summary>
-
-**Параметры:**
-- `filePath: string`
-- `oldString: string`
-- `newString: string`
-- `replaceAll: bool = false`
-
-**Поведение:** `replaceAll` продолжает поиск после вставленного `newString` (замену повторно не сканирует). Безопасно, если `newString` содержит `oldString`. В лог пишутся start/match/write и время.
-</details>
-
-### Build / Test / CLI
-
-<details>
-<summary><code>run_dotnet_build</code> — Запускает dotnet build и возвращает компактную сводку.</summary>
-
-**Параметры:**
-- `workspacePath: string` — только существующий **файл** `.csproj`, `.sln` или `.slnx` (не каталог).
-- `configuration: string? = null` — опционально `dotnet build -c` (например `Sit-Debug`, `Dit-Debug`). Если не задан — берётся с `load_workspace`.
-- `noIncremental: bool = true` — `--no-incremental` на каждом build-шаге (по умолчанию). `false` только если явно принимаете up-to-date кэш MSBuild.
-- `platform: string? = null` — опционально `-p:Platform=`. Если не задан — с `load_workspace`.
-
-**Поведение:** наследование env + pinning (`MSBUILD_EXE_PATH`, `DOTNET_MSBUILD_SDK_RESOLVER_SDKS_*`). Mismatch → **error `MCP_MSBUILD_SDK_MISMATCH`** + pinned `dotnet exec …/MSBuild.dll /restore`. Цепочка minimal → pinned restore → restore/build detailed. **Итоговый exit** = последний `dotnet build` (не restore). В metadata — `Configuration` / `Platform` / `NoIncremental`. Внутреннего кэша результатов MCP нет.
-
-</details>
-
-<details>
-<summary><code>run_dotnet_test</code> — Запускает dotnet test с сокращенным выводом ошибок.</summary>
-
-**Параметры:**
-- `workspacePath: string`
-- `timeoutSeconds: int = 300` — таймаут процесса; `0` отключает (не рекомендуется). Для долгих интеграционных поднимайте (900/1800).
-- `noBuild: bool = false` — `--no-build` (после успешного `run_dotnet_build`).
-- `noRestore: bool = false` — `--no-restore`.
-- `configuration: string? = null` — опционально `dotnet test -c` (например `Sit-Debug`). Если не задан — с `load_workspace`.
-- `platform: string? = null` — опционально `-p:Platform=`.
-
-**Поведение:** при `noBuild=false` сначала отдельный incremental `dotnet build`, затем `dotnet test --no-build --no-restore` (парсер видит только тест). Сводка из `Passed!`, `Test Run Successful` + `Total tests`/`Passed:` (Failed=0 если нет строки), или `.slnx` fail-only `Total tests` + `Failed:` (Passed = Total − Failed − Skipped), FQN-строки тестов (`[ms]` / `[1 s]` / `[1 m 28 s]`); дедуп NU audit. Без маркеров сводки при exit 0 → **partial** + 2KB лога. `timeoutSeconds` — общий бюджет на build+test.
-
-</details>
-
-<details>
-<summary><code>run_specific_test</code> — dotnet test с фильтром по классу и/или методу.</summary>
-
-**Параметры:**
-- `workspacePath: string`
-- `className: string?` — например `UserServiceTests`
-- `methodName: string?` — например `CreateUser_WhenValid_ReturnsOk`
-- `timeoutSeconds: int = 300` — как у `run_dotnet_test`.
-- `noBuild: bool = false` — `--no-build`.
-- `noRestore: bool = false` — `--no-restore`.
-- `configuration: string? = null` — опционально `dotnet test -c` (как у `run_dotnet_test`).
-
-Нужен хотя бы один из `className` / `methodName`. Tool строит VSTest-safe `--filter` (`FullyQualifiedName~…`, без `()` у метода, без лишней ведущей `.` на dotted FQN). После `load_workspace` Roslyn по возможности резолвит FQN типа/метода.
-
-**Для модели:** TDD/фикс бага — этот tool, не полный suite и не ручной VSTest filter. Предпочитайте `className` + короткое `methodName`. После билда предпочитайте `noBuild=true`. При `noBuild=false` — тот же split build/test, что у `run_dotnet_test`.
-
-</details>
-
-<details>
-<summary><code>get_test_list</code> — Список тестов в solution (JSON). Сначала saved <code>.cs</code> с диска.</summary>
-
-**Параметры:** `maxResults: int = 200`. Нужен `load_workspace`. При `count: 0` — подсказка, что загружен не тот `.csproj`.
-
-</details>
-
-<details>
-<summary><code>generate_test_method_stub</code> — Вставить заглушку тестового метода.</summary>
-
-**Параметры:** `filePath`, `className`, `methodName`, `testFramework: string?` — `xunit` / `nunit` / `mstest`
-
-</details>
-
-<details>
-<summary><code>list_nuget_packages</code> — Установленные NuGet-пакеты (JSON по проектам).</summary>
-
-**Параметры:**
-- `workspacePath: string` — `.sln`, `.slnx`, `.csproj` или каталог
-- `includeTransitive: bool` — по умолчанию `true`
-- `includeOutdated: bool` — по умолчанию `false` (`--outdated`)
-- `includeVulnerable: bool` — по умолчанию `false` (`--vulnerable`)
-
-**Для модели:** смотреть дерево зависимостей до правок `.csproj`; не `execute_dotnet_command` для списка пакетов.
-
-</details>
-
-<details>
-<summary><code>list_outdated_packages</code> — Устаревшие NuGet-пакеты (JSON).</summary>
-
-**Параметры:** `workspacePath` — shortcut для `list_nuget_packages` с `includeOutdated=true`.
-
-</details>
-
-<details>
-<summary><code>add_package_reference</code> — Добавить PackageReference в .csproj.</summary>
-
-**Параметры:** `projectPath`, `packageId`, `version?`. Сначала `search_nuget_registry`. После — `load_workspace`.
-
-</details>
-
-<details>
-<summary><code>remove_package_reference</code> — Удалить PackageReference из .csproj.</summary>
-
-**Параметры:** `projectPath`, `packageId`
-
-</details>
-
-<details>
-<summary><code>search_nuget_registry</code> — Поиск пакета и последней стабильной версии на NuGet.</summary>
-
-**Параметры:**
-- `query: string` — id или поисковый термин
-- `exactMatch: bool` — по умолчанию `true`
-- `maxResults: int` — при `exactMatch=false`, по умолчанию 10
-
-**Для модели:** проверять id/версию перед `dotnet add package`; не выдумывать названия пакетов.
-
-</details>
-
-<details>
-<summary><code>execute_dotnet_command</code> — Запускает dotnet {command} в указанной директории.</summary>
-
-**Параметры:**
-- `command: string`
-- `workingDirectory: string?`
-</details>
-
-<details>
-<summary><code>run_format</code> — Запускает dotnet format (применение или verify-only). Отформатированные <code>.cs</code> подхватывает следующий поиск символов без reset.</summary>
-
-**Параметры:**
-- `workspacePath: string`
-- `verifyOnly: bool = false`
-</details>
-
-### Filesystem Utility & Search
-
-<details>
-<summary><code>list_directory_tree</code> — Строит дерево файлов и директорий (исключая bin, obj, .git).</summary>
-
-**Параметры:**
-- `directoryPath: string`
-- `maxDepth: int = 2`
-</details>
-
-<details>
-<summary><code>search_code</code> — Поиск совпадений по файлам (plain text или regex).</summary>
-
-**Параметры:**
-- `pattern: string`
-- `directoryPath: string? = null`
-- `includeExtensions: string? = ".cs"` — список через запятую/`;` (`.cs,.csproj,.json`) или `*` для всех файлов.
-- `useRegex: bool = false`
-- `caseSensitive: bool = false` — по умолчанию без учёта регистра; для leftover branding — `true`.
-- `maxResults: int = 50`
-- `maxScanSeconds: int = 20`
-
-**Для агента:** если в клиенте есть встроенный **`grep`**, для обычного текстового поиска предпочитай его (не grep из терминала). Этот MCP-tool — когда нужен поиск из процесса Roslyn MCP.
-</details>
-
-<details>
-<summary><code>read_file_range</code> — Читает конкретный диапазон строк из файла с их исходными номерами.</summary>
-
-**Параметры:**
-- `filePath: string`
-- `startLine: int` (1-based)
-- `lineCount: int`
-</details>
-
-<details>
-<summary><code>read_log_tail</code> — Читает конец лог-файла с опциональной фильтрацией по ключевому слову.</summary>
-
-**Параметры:**
-- `filePath: string? = null` — не указывайте, чтобы читать последний лог MCP (`logs/mcp-*.log`, как `tail_tool_log`).
-- `lastNLines: int = 200`
-- `filterKeyword: string? = null` — например `Failure`, `ERR`, `NU1903`.
-
-**Совет:** для диагностики MCP удобнее `tail_tool_log` и `filterKeyword`.
-</details>
-
-<details>
-<summary><code>tail_tool_log</code> — Читает последний лог сервера `logs/mcp-*.log`.</summary>
-
-**Параметры:**
-- `lastNLines: int = 200`
-- `filterKeyword: string? = null`
-</details>
-
-<details>
-<summary><code>manage_agent_scratchpad</code> — Управляет долговременной памятью агента между сессиями.</summary>
-
-**Параметры:**
-- `action: string` (`read` | `write` | `append` | `clear`)
-- `content: string? = null`
-</details>
-
-### Roslyn Refactoring / Solution Insights
-
-<details>
-<summary><code>rename_symbol</code> — Семантический rename C# символа через Roslyn с предпросмотром.</summary>
-
-**Параметры:**
-- `filePath: string`
-- `symbolName: string`
-- `newName: string`
-- `scope: string = "project"` — допустимо: `project` | `solution`
-- `previewOnly: bool = true`
-
-**Область:** только C# символы. Для папки проекта / `.csproj` / графа solution — `rename_project`. Для README/rules/URL — host Grep/edit.
-</details>
-
-<details>
-<summary><code>rename_project</code> — Переименование SDK-style проекта (папка + `.csproj`) и правка MSBuild-графа.</summary>
-
-**Параметры:**
-- `projectPath: string` — путь к `.csproj`
-- `newProjectName: string` — один сегмент пути (например `DupFinder.Core`)
-- `dryRun: bool = true`
-- `searchRoot: string? = null` — корень поиска соседних проектов / `.sln` / `.slnx`
-
-**Поведение:** переносит одноимённую папку проекта и `.csproj`; обновляет `AssemblyName`/`RootNamespace` только если они совпадали со старым именем; чинит `ProjectReference`; обновляет `.sln` и `.slnx`. Только **SDK-style**. Нестандартный layout — hard fail. Не трогает C# namespace/типы, Docker, launchSettings, CI, docs. После apply: `load_workspace` → `run_dotnet_build`.
 </details>
 
 <details>
@@ -1463,53 +1108,192 @@ cd D:\Devel\YourApp
 **Поведение:** собирает public instance methods/properties/events класса, генерирует сигнатуры интерфейса, добавляет `: IInterface` к классу. Block/file-scoped namespace. Partial class не поддерживаются.
 </details>
 
+### Сборка / Тесты
+
 <details>
-<summary><code>move_type_to_new_file</code> — Разнести top-level типы по файлам (one type per file).</summary>
+<summary><code>run_dotnet_build</code> — Запускает dotnet build и возвращает компактную сводку.</summary>
 
 **Параметры:**
-- `filePath: string`
-- `typeName: string?` — если не указан, переносит все типы, имя которых не совпадает с именем файла
-- `previewOnly: bool = false`
+- `workspacePath: string` — только существующий **файл** `.csproj`, `.sln` или `.slnx` (не каталог).
+- `configuration: string? = null` — опционально `dotnet build -c` (например `Sit-Debug`, `Dit-Debug`). Если не задан — из конфига `configuration`.
+- `noIncremental: bool = true` — `--no-incremental` на каждом build-шаге (по умолчанию). `false` только если явно принимаете up-to-date кэш MSBuild.
+- `platform: string? = null` — опционально `-p:Platform=`. Если не задан — из конфига `platform`.
 
-**Поведение:** создаёт `{TypeName}.cs` рядом с исходником, копирует usings/namespace, удаляет тип из исходного файла. Partial types не поддерживаются.
+**Поведение:** pinning SDK + многошаговый probe (minimal → restore escalate → normal/detailed). **Итоговый exit** = последний `dotnet build`. При конфликте SDK — `MCP_MSBUILD_SDK_MISMATCH`. Используйте ПОСЛЕ правок для проверки компиляции.
 </details>
 
 <details>
-<summary><code>list_projects</code> — Показывает проекты текущего workspace.</summary>
+<summary><code>run_dotnet_test</code> — Запускает dotnet test с сокращенным выводом ошибок.</summary>
 
 **Параметры:**
-- `workspacePath: string? = null`
+- `workspacePath: string`
+- `timeoutSeconds: int = 300` — таймаут процесса; `0` отключает (не рекомендуется). Для долгих интеграционных поднимайте.
+- `noBuild: bool = false` — `--no-build` (после успешного `run_dotnet_build`).
+- `noRestore: bool = false` — `--no-restore`.
+- `configuration: string? = null` — опционально `dotnet test -c` (например `Sit-Debug`). Если не задан — из конфига `configuration`.
+- `platform: string? = null` — опционально `-p:Platform=`. Если не задан — из конфига `platform`.
+
+**Поведение:** при `noBuild=false` сначала отдельный `dotnet build`, затем `dotnet test --no-build --no-restore`. Возвращает чистую сводку passed/failed; убивает дерево процессов при timeout.
+</details>
+
+<details>
+<summary><code>run_specific_test</code> — dotnet test с фильтром по классу и/или методу.</summary>
+
+**Параметры:**
+- `workspacePath: string`
+- `className: string?` — например `UserServiceTests`
+- `methodName: string?` — например `CreateUser_WhenValid_ReturnsOk`
+- `timeoutSeconds: int = 300` — как у `run_dotnet_test`.
+- `noBuild: bool = false` — `--no-build`.
+- `noRestore: bool = false` — `--no-restore`.
+- `configuration: string? = null` — опционально `dotnet test -c` (как у `run_dotnet_test`).
+
+Нужен хотя бы один из `className` / `methodName`. Tool строит VSTest-safe `--filter` (`FullyQualifiedName~…`) — не используйте сырой bash-команду и не пишите фильтры вручную. Если workspace загружен, Roslyn резолвит FQN типа/метода. Для TDD red/green.
+</details>
+
+<details>
+<summary><code>run_dotnet_run</code> — Запускает `dotnet run --project <csproj>` с pinning SDK.</summary>
+
+**Параметры:**
+- `workspacePath: string` — `.csproj` (executable/worker проект).
+- `arguments: string?` — опциональные аргументы после `--`.
+- `workingDirectory: string?` — опциональный override рабочего каталога.
+- `timeoutSeconds: int = 120` — `0` = без таймаута.
+- `maxStdoutChars: int = 8000`, `maxStderrChars: int = 2000`
+
+Возвращает отдельно stdout/stderr с лимитами (stderr tail для прогресса). Не используйте сырой `dotnet run` из терминала для запуска проектов.
+</details>
+
+<details>
+<summary><code>run_format</code> — Запускает dotnet format (применение или verify-only).</summary>
+
+**Параметры:**
+- `workspacePath: string`
+- `verifyOnly: bool = false`
+
+Отформатированные `.cs` на диске подхватывает следующий поиск символов (disk-sync) автоматически.
+</details>
+
+<details>
+<summary><code>get_test_list</code> — Список тестов в solution (JSON). Сначала saved <code>.cs</code> с диска.</summary>
+
+**Параметры:** `maxResults: int = 200`. Детектит Fact/Theory/TestMethod и т.д. При `count: 0` — сигнал, что загружен не тот `.csproj`: перезагрузите тестовый `.sln`/`.slnx` через `reload` (или задайте `workspace-path`).
+</details>
+
+### Проекты / NuGet
+
+<details>
+<summary><code>list_projects</code> — Показывает проекты текущего workspace (Name, TFM, OutputType, Refs).</summary>
+
+**Параметры:**
+- `workspacePath: string? = null` — если задан, workspace загружается/перезагружается перед выводом.
 </details>
 
 <details>
 <summary><code>get_project_graph</code> — Строит граф зависимостей project-to-project.</summary>
 
 **Параметры:**
-- `workspacePath: string? = null`
+- `workspacePath: string? = null` — если задан, workspace загружается/перезагружается перед построением графа.
 </details>
 
-### Жизненный цикл сервера
+<details>
+<summary><code>list_nuget_packages</code> — Установленные NuGet-пакеты (JSON по проектам).</summary>
+
+**Параметры:**
+- `workspacePath: string` — `.sln`, `.slnx`, `.csproj` или каталог
+- `includeTransitive: bool` — по умолчанию `true`
+- `includeOutdated: bool` — по умолчанию `false` (`--outdated`)
+- `includeVulnerable: bool` — по умолчанию `false` (`--vulnerable`)
+
+**Для модели:** смотреть дерево зависимостей до правок `.csproj`; не выводите список пакетов через сырой bash `dotnet list`.
+</details>
 
 <details>
-<summary><code>get_mcp_server_info</code> — Путь к exe, число tools, логи, состояние workspace.</summary>
+<summary><code>list_outdated_packages</code> — Устаревшие NuGet-пакеты (JSON).</summary>
+
+**Параметры:** `workspacePath` — shortcut для `list_nuget_packages` с `includeOutdated=true`.
+</details>
+
+<details>
+<summary><code>search_nuget_registry</code> — Поиск пакета и последней стабильной версии на NuGet.</summary>
+
+**Параметры:**
+- `query: string` — id или поисковый термин
+- `exactMatch: bool` — по умолчанию `true`
+- `maxResults: int` — при `exactMatch=false`, по умолчанию 10
+
+**Для модели:** проверять id/версию перед добавлением пакета; не выдумывать названия пакетов.
+</details>
+
+<details>
+<summary><code>run_nuget_audit</code> — Запускает `dotnet list package --vulnerable` и возвращает компактную таблицу уязвимостей.</summary>
+
+**Параметры:**
+- `workspacePath: string`
+- `maxEntries: int = 40`
+</details>
+
+<details>
+<summary><code>add_package_reference</code> — Добавить PackageReference в .csproj.</summary>
+
+**Параметры:** `projectPath`, `packageId`, `version?`. Сначала `search_nuget_registry`. Сбрасывает in-memory workspace — после используйте `reload`.
+</details>
+
+<details>
+<summary><code>remove_package_reference</code> — Удалить PackageReference из .csproj.</summary>
+
+**Параметры:** `projectPath`, `packageId`. Сбрасывает in-memory workspace — после используйте `reload`.
+</details>
+
+<details>
+<summary><code>rename_project</code> — Переименование SDK-style проекта (папка + `.csproj`) и правка MSBuild-графа.</summary>
+
+**Параметры:**
+- `projectPath: string` — путь к `.csproj`
+- `newProjectName: string` — один сегмент пути (например `DupFinder.Core`)
+- `dryRun: bool = true`
+- `searchRoot: string? = null` — корень поиска соседних проектов / `.sln` / `.slnx`
+
+**Поведение:** переносит одноимённую папку проекта и `.csproj`; обновляет `AssemblyName`/`RootNamespace` только если они совпадали со старым именем; чинит `ProjectReference`; обновляет `.sln` и `.slnx`. Только **SDK-style**. Не трогает C# namespace/типы, Docker, launchSettings, CI, docs. После apply: `reload` → `run_dotnet_build`.
+</details>
+
+### Поиск / Прочее
+
+<details>
+<summary><code>search_code</code> — Поиск совпадений по файлам (plain text или regex).</summary>
+
+**Параметры:**
+- `pattern: string`
+- `directoryPath: string? = null`
+- `includeExtensions: string? = ".cs"` — список через запятую/`;` (`.cs,.csproj,.json`) или `*` для всех файлов.
+- `useRegex: bool = false`
+- `caseSensitive: bool = false` — по умолчанию без учёта регистра; для leftover branding — `true`.
+- `maxResults: int = 50`
+- `maxScanSeconds: int = 20`
+
+При превышении cap полный результат (тот же markdown) пишется во временный файл, возвращается короткий ответ (count + путь + сводка) — ничего молча не обрезается.
+
+**Для агента:** если в клиенте есть встроенный **`grep`**, для обычного текстового поиска предпочитай его (не grep из терминала). Этот MCP-tool — когда нужен поиск из процесса Roslyn MCP.
+</details>
+
+<details>
+<summary><code>get_mcp_server_info</code> — Путь к exe, число tools, логи, загруженные конфиги, состояние workspace.</summary>
 
 **Параметры:** *(нет)*
 
-После `dotnet publish` — проверка, что MCP подхватил новый бинарник (ожидай **56** tools).
-
+После `dotnet publish` — проверка, что MCP подхватил новый бинарник (ожидай **40** tools).
 </details>
 
 <details>
 <summary><code>stop_mcp_server</code> — Завершает процесс MCP после ответа (чтобы пересобрать бинарник сервера; затем перезапуск MCP в IDE). Не для refresh сохранённых исходников — они синхронизируются сами.</summary>
 
 **Параметры:** *(нет)*
-
 </details>
 
 ### Prompts
 
 <details>
-<summary><code>RefactoringAssistantPrompt</code> — Краткие инструкции для сценариев C#-рефакторинга.</summary>
+<summary><code>RefactoringAssistantPrompt</code> — Краткие инструкции для сценариев C#-рефакторинга (правки файлов — через host read/write/edit/bash).</summary>
 
 **Параметры:**
 - `focus: string? = null`

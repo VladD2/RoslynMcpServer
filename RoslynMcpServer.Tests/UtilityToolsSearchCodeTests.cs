@@ -1,5 +1,7 @@
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using RoslynMcpServer.Config;
 using RoslynMcpServer.Tools;
 using Xunit;
 
@@ -26,7 +28,7 @@ public sealed class UtilityToolsSearchCodeTests
             Environment.CurrentDirectory = externalRoot;
 
             var manager = CreateManagerWithLoadedPath(Path.Combine(workspaceRoot, "App.sln"));
-            var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager);
+            var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
 
             var result = await tool.SearchCode("next version");
 
@@ -55,7 +57,7 @@ public sealed class UtilityToolsSearchCodeTests
     {
         var workspaceRoot = CreateTempRoot();
         var manager = CreateManagerWithLoadedPath(Path.Combine(workspaceRoot, "App.sln"));
-        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager);
+        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
 
         try
         {
@@ -80,7 +82,7 @@ public sealed class UtilityToolsSearchCodeTests
     {
         var workspaceRoot = CreateTempRoot();
         var manager = CreateManagerWithLoadedPath(Path.Combine(workspaceRoot, "App.sln"));
-        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager);
+        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
 
         try
         {
@@ -108,7 +110,7 @@ public sealed class UtilityToolsSearchCodeTests
     {
         var workspaceRoot = CreateTempRoot();
         var manager = CreateManagerWithLoadedPath(Path.Combine(workspaceRoot, "App.sln"));
-        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager);
+        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
 
         try
         {
@@ -139,7 +141,7 @@ public sealed class UtilityToolsSearchCodeTests
     {
         var workspaceRoot = CreateTempRoot();
         var manager = CreateManagerWithLoadedPath(Path.Combine(workspaceRoot, "App.sln"));
-        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager);
+        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
 
         try
         {
@@ -164,7 +166,7 @@ public sealed class UtilityToolsSearchCodeTests
 
     private static SolutionManager CreateManagerWithLoadedPath(string loadedPath)
     {
-        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance);
+        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, new WorkspaceConfig(new ConfigurationBuilder().Build()));
         typeof(SolutionManager)
             .GetField("_loadedPath", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(manager, loadedPath);

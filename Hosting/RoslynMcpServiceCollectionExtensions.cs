@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
+using RoslynMcpServer.Config;
 using RoslynMcpServer.Diagnostics;
 using RoslynMcpServer.Services;
 using RoslynMcpServer.Tools;
@@ -14,6 +15,13 @@ public static class RoslynMcpServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddRoslynMcpCoreServices(this IServiceCollection services)
     {
+        // Production Program.cs registers the merged-config WorkspaceConfig instance before this call;
+        // the fallback covers hosts that do not (tests) — it binds to the host's (possibly empty) IConfiguration.
+        if (!services.Any(d => d.ServiceType == typeof(WorkspaceConfig)))
+        {
+            services.AddSingleton<WorkspaceConfig>();
+        }
+
         services.AddSingleton<SolutionManager>();
         foreach (var toolType in McpToolRegistry.ToolTypes)
         {
@@ -31,7 +39,6 @@ public static class RoslynMcpServiceCollectionExtensions
         return services
             .AddMcpServer(o => McpInboundProtocolLogger.Register(o))
             .WithStdioServerTransport()
-            .WithTools<RoslynTools>()
             .WithTools<WorkspaceTools>()
             .WithTools<CodeAnalysisTools>()
             .WithTools<CodeFixTools>()
@@ -39,7 +46,6 @@ public static class RoslynMcpServiceCollectionExtensions
             .WithTools<NavigationTools>()
             .WithTools<RefactoringTools>()
             .WithTools<AstTools>()
-            .WithTools<EditingTools>()
             .WithTools<BuildTools>()
             .WithTools<RunTools>()
             .WithTools<TestTools>()

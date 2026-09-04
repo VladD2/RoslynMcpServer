@@ -9,6 +9,7 @@ using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Rename;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+using RoslynMcpServer.Config;
 using RoslynMcpServer.Diagnostics;
 using RoslynMcpServer.Services;
 
@@ -16,9 +17,6 @@ namespace RoslynMcpServer.Tools;
 
 public sealed class UtilityTools
 {
-    private const string AgentMemoryDirectoryName = ".agent_memory";
-    private const string ScratchpadFileName = "scratchpad.md";
-
     private static readonly HashSet<string> ExcludedDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
         "bin",
@@ -29,237 +27,23 @@ public sealed class UtilityTools
 
     private readonly ILogger<UtilityTools> _logger;
     private readonly SolutionManager _solutionManager;
+    private readonly WorkspaceConfig _workspaceConfig;
 
-    public UtilityTools(ILogger<UtilityTools> logger, SolutionManager solutionManager)
+    public UtilityTools(ILogger<UtilityTools> logger, SolutionManager solutionManager, WorkspaceConfig workspaceConfig)
     {
         _logger = logger;
         _solutionManager = solutionManager;
-    }
-
-    [McpServerTool(Name = "execute_dotnet_command", Title = "ExecuteDotNetCommand")]
-    [Description(
-        "Executes `dotnet {command}` with pinned SDK (global.json). Prefer `run_dotnet_build`, `run_dotnet_test`, or `run_dotnet_run` when applicable "
-        + "(those provide parsers, budgets, and structured reports — this tool returns raw truncated stdout/stderr). "
-        + "Default timeout 300s; process tree is killed on timeout/cancel. Output excerpt limits ~6000 stdout / ~2000 stderr chars. "
-        + "On Windows PowerShell 5.x use `;` between commands, not `&&`.")]
-    public async Task<string> ExecuteDotNetCommand(
-        [Description("Arguments passed after `dotnet`, for example: `test`, `build`, or `add package Moq`.")] string command,
-        [Description("Optional working directory. If omitted, uses process CWD then resolves nearest global.json root when possible.")] string? workingDirectory = null,
-        [Description("Process timeout in seconds. Default 300. Set 0 to disable.")]
-        int timeoutSeconds = DotNetCliRunner.DefaultTimeoutSeconds,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(command))
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(ExecuteDotNetCommand), "Command is empty.");
-            }
-
-            var fullWorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory)
-                ? Environment.CurrentDirectory
-                : Path.GetFullPath(workingDirectory);
-            if (!Directory.Exists(fullWorkingDirectory))
-            {
-                return ToolTelemetry.TraceAndReturn(
-                    nameof(ExecuteDotNetCommand),
-                    $"Working directory not found: `{fullWorkingDirectory}`");
-            }
-
-            var workDir = WorkspaceRootResolver.ResolveDotNetWorkingDirectory(fullWorkingDirectory);
-            TimeSpan? timeout = timeoutSeconds > 0 ? TimeSpan.FromSeconds(timeoutSeconds) : null;
-            var run = await DotNetCliRunner.RunSeparatedAsync(command.Trim(), workDir, timeout, cancellationToken)
-                .ConfigureAwait(false);
-
-            var stdoutExcerpt = ProcessOutputExcerpt.BuildStdoutExcerpt(run.StdOut, 6000);
-            var stderrExcerpt = ProcessOutputExcerpt.BuildStderrExcerpt(run.StdErr, 2000);
-
-            var sb = new StringBuilder();
-            sb.AppendLine("## dotnet command");
-            sb.AppendLine();
-            foreach (var line in run.RunMetadata.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-            {
-                sb.AppendLine(line);
-            }
-
-            sb.AppendLine($"- **Command:** `dotnet {command.Trim()}`");
-            sb.AppendLine($"- **Exit code:** `{run.ExitCode}`");
-            if (run.TimedOut)
-            {
-                sb.AppendLine("- **Timed out:** yes (process tree killed)");
-                sb.AppendLine();
-                sb.AppendLine(DotNetCliRunner.FormatHangHints(timedOut: true, cancelled: false));
-            }
-
-            sb.AppendLine();
-            sb.AppendLine("### StdOut");
-            sb.AppendLine(string.IsNullOrEmpty(stdoutExcerpt) ? "(empty)" : "```text\n" + stdoutExcerpt + "\n```");
-            sb.AppendLine();
-            sb.AppendLine("### StdErr");
-            sb.AppendLine(string.IsNullOrEmpty(stderrExcerpt) ? "(empty)" : "```text\n" + stderrExcerpt + "\n```");
-
-            return ToolTelemetry.TraceAndReturn(nameof(ExecuteDotNetCommand), sb.ToString().TrimEnd());
-        }
-        catch (OperationCanceledException)
-        {
-            return ToolTelemetry.TraceAndReturn(
-                nameof(ExecuteDotNetCommand),
-                "Command was cancelled." + Environment.NewLine + Environment.NewLine
-                + DotNetCliRunner.FormatHangHints(timedOut: false, cancelled: true));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ExecuteDotNetCommand failed for command {Command} in {WorkingDirectory}", command, workingDirectory);
-            return ToolTelemetry.TraceAndReturn(nameof(ExecuteDotNetCommand), $"Failed to run `dotnet {command}`: {ex.Message}");
-        }
-    }
-
-    [McpServerTool(Name = "get_changed_files", Title = "Get changed files (git)")]
-    [Description(
-        "Lists git changed/untracked files under the repository root (for commit messages and scoped testing). "
-        + "Suggests test projects when a workspace is loaded. Table capped at ~80 paths. "
-        + "Does not return file diffs — use the host git tools for patches.")]
-    public async Task<string> GetChangedFiles(
-        [Description("Optional path to .sln/.slnx/.csproj or repo directory. When omitted, uses loaded workspace or current directory.")]
-        string? workspacePath = null,
-        CancellationToken cancellationToken = default)
-    {
-        const string toolName = nameof(GetChangedFiles);
-
-        try
-        {
-            var anchor = ResolveGitAnchorPath(workspacePath);
-            var repoRoot = GitChangedFilesHelper.FindRepositoryRoot(anchor);
-            if (repoRoot is null)
-            {
-                return ToolTelemetry.TraceAndReturn(toolName, $"Error: No git repository found from `{anchor}`.");
-            }
-
-            var status = await GitChangedFilesHelper.RunGitAsync(repoRoot, "status --porcelain", cancellationToken)
-                .ConfigureAwait(false);
-            if (!status.Success)
-            {
-                return ToolTelemetry.TraceAndReturn(toolName, $"git status failed: {status.Error}");
-            }
-
-            var changed = GitChangedFilesHelper.ParsePorcelainStatus(status.Output);
-            var solution = _solutionManager.GetCurrentSolution();
-            var relativePaths = changed.Select(c => c.Path).ToList();
-            var testSuggestions = GitChangedFilesHelper.SuggestTestProjects(solution, relativePaths);
-
-            var sb = new StringBuilder();
-            sb.AppendLine("## Git changed files");
-            sb.AppendLine();
-            sb.AppendLine($"- **Repository:** `{repoRoot}`");
-            sb.AppendLine($"- **Changed/untracked:** {changed.Count}");
-            sb.AppendLine();
-
-            if (changed.Count == 0)
-            {
-                sb.AppendLine("Working tree clean (no porcelain entries).");
-            }
-            else
-            {
-                sb.AppendLine("| Status | Path |");
-                sb.AppendLine("| --- | --- |");
-                foreach (var file in changed.Take(80))
-                {
-                    sb.AppendLine($"| {file.Status} | `{file.Path}` |");
-                }
-
-                if (changed.Count > 80)
-                {
-                    sb.AppendLine();
-                    sb.AppendLine($"[!] Showing first 80 of {changed.Count} paths.");
-                }
-            }
-
-            if (testSuggestions.Count > 0)
-            {
-                sb.AppendLine();
-                sb.AppendLine("### Suggested test projects (heuristic)");
-                foreach (var testProj in testSuggestions)
-                {
-                    sb.AppendLine($"- `{testProj}`");
-                }
-            }
-
-            sb.AppendLine();
-            sb.AppendLine("> On Windows PowerShell 5.x chain commands with `;`, not `&&`.");
-            return ToolTelemetry.TraceAndReturn(toolName, sb.ToString().TrimEnd());
-        }
-        catch (OperationCanceledException)
-        {
-            return ToolTelemetry.TraceAndReturn(toolName, "`get_changed_files` was cancelled.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "GetChangedFiles failed");
-            return ToolTelemetry.TraceAndReturn(toolName, $"Error: {ex.Message}");
-        }
-    }
-
-    private string ResolveGitAnchorPath(string? workspacePath)
-    {
-        if (!string.IsNullOrWhiteSpace(workspacePath))
-        {
-            return Path.GetFullPath(workspacePath.Trim());
-        }
-
-        var solution = _solutionManager.GetCurrentSolution();
-        var firstProject = solution?.Projects.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.FilePath));
-        if (firstProject?.FilePath is not null)
-        {
-            return firstProject.FilePath;
-        }
-
-        return Environment.CurrentDirectory;
-    }
-
-    [McpServerTool(Name = "list_directory_tree", Title = "ListDirectoryTree")]
-    [Description("Recursively lists files and directories as a tree, excluding `bin`, `obj`, `.git`, and `.vs`. Relative `directoryPath` uses process CWD.")]
-    public Task<string> ListDirectoryTree(
-        [Description("Root directory to list (same idea as `directoryPath` in search_code).")] string directoryPath,
-        [Description("Maximum recursion depth (default 2)")] int maxDepth = 2,
-        CancellationToken cancellationToken = default)
-    {
-        _ = cancellationToken;
-
-        try
-        {
-            if (string.IsNullOrWhiteSpace(directoryPath))
-            {
-                return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ListDirectoryTree), "Error: `directoryPath` is empty."));
-            }
-
-            var rootPath = Path.GetFullPath(directoryPath);
-            if (!Directory.Exists(rootPath))
-            {
-                return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ListDirectoryTree), $"Directory not found: `{rootPath}`"));
-            }
-
-            var depth = Math.Max(0, maxDepth);
-            var rootInfo = new DirectoryInfo(rootPath);
-            var sb = new StringBuilder();
-            sb.AppendLine(rootInfo.Name);
-            AppendDirectoryTree(sb, rootInfo, 0, depth);
-            return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ListDirectoryTree), sb.ToString().TrimEnd()));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ListDirectoryTree failed for {DirectoryPath}", directoryPath);
-            return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ListDirectoryTree), $"Failed to list directory tree for `{directoryPath}`: {ex.Message}"));
-        }
+        _workspaceConfig = workspaceConfig;
     }
 
     [McpServerTool(Name = "get_method_body", Title = "GetMethodBody")]
     [Description(
         "Returns the source of the first method matching `methodName` inside `className` in a file "
         + "(no overload selection — first match wins; use `update_method_body` with `parameterTypes` when overloads matter). "
-        + "Reads **disk** (same as `get_file_content`), not the Roslyn index — unsaved editor buffers are not included. "
+        + "Reads **disk** (like the host read tool), not the Roslyn index — unsaved editor buffers are not included. "
         + "Prefers this over reading the whole file for large sources.")]
     public async Task<string> GetMethodBody(
-        [Description("Absolute path or workspace-relative path to the C# source file (same parameter name as get_file_content / read_file_range).")] string filePath,
+        [Description("Absolute path or workspace-relative path to the C# source file (same parameter name as the host read tool).")] string filePath,
         [Description("Class name containing the method")] string className,
         [Description("Method name to extract")] string methodName,
         CancellationToken cancellationToken = default)
@@ -322,142 +106,10 @@ public sealed class UtilityTools
         }
     }
 
-    [McpServerTool(Name = "read_log_tail", Title = "ReadLogTail")]
-    [Description(
-        "Reads the tail of a log file for LLM-safe diagnostics. Optionally filters lines by keyword (case-insensitive). "
-        + "When `filePath` is omitted, reads the latest MCP server log (`logs/mcp-*.log`) — same as `tail_tool_log`.")]
-    public async Task<string> ReadLogTail(
-        [Description("Absolute path or workspace-relative path to the log file. Omit to read the latest MCP server log (logs/mcp-*.log).")] string? filePath = null,
-        [Description("How many lines from the end of the result to return. Default is 200.")] int lastNLines = 200,
-        [Description("Optional case-insensitive keyword to filter lines before taking the tail. Pass null or empty string to disable filtering.")] string? filterKeyword = null,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(filePath))
-            {
-                return await TailToolLog(lastNLines, filterKeyword, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (lastNLines <= 0)
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(ReadLogTail), "`lastNLines` must be greater than 0.");
-            }
-
-            var fullPath = _solutionManager.ResolvePathAgainstWorkspace(filePath);
-            if (!File.Exists(fullPath))
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(ReadLogTail), $"File not found: `{fullPath}`");
-            }
-
-            var result = LogTailReader.ReadTail(fullPath, lastNLines, filterKeyword, cancellationToken);
-            if (string.IsNullOrEmpty(result))
-            {
-                var hasFilter = !string.IsNullOrWhiteSpace(filterKeyword);
-                var filterInfo = hasFilter ? $" for filter `{filterKeyword}`" : string.Empty;
-                return ToolTelemetry.TraceAndReturn(nameof(ReadLogTail), $"No lines found{filterInfo} in `{fullPath}`.");
-            }
-
-            return ToolTelemetry.TraceAndReturn(nameof(ReadLogTail), result);
-        }
-        catch (OperationCanceledException)
-        {
-            return ToolTelemetry.TraceAndReturn(nameof(ReadLogTail), "Log tail read was cancelled.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ReadLogTail failed for {FilePath}", filePath);
-            return ToolTelemetry.TraceAndReturn(
-                nameof(ReadLogTail),
-                $"Error ({ex.GetType().Name}): {ex.Message}");
-        }
-    }
-
-    [McpServerTool(Name = "read_file_range", Title = "ReadFileRange")]
-    [Description("Reads a specific chunk of a text file to reduce LLM context usage. Returns up to `lineCount` lines starting from the 1-based `startLine`, with original line numbers included in the output.")]
-    public Task<string> ReadFileRange(
-        [Description("Absolute path or workspace-relative path to the target file (same parameter name as get_file_content).")] string filePath,
-        [Description("1-based line number where reading should start (first line is 1).")] int startLine,
-        [Description("Number of lines to read from the starting line. Must be greater than 0.")] int lineCount,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(filePath))
-            {
-                return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ReadFileRange), "Error: `filePath` is empty."));
-            }
-
-            if (startLine <= 0)
-            {
-                return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ReadFileRange), "Error: `startLine` must be >= 1."));
-            }
-
-            if (lineCount <= 0)
-            {
-                return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ReadFileRange), "Error: `lineCount` must be > 0."));
-            }
-
-            var fullPath = _solutionManager.ResolvePathAgainstWorkspace(filePath);
-            if (!File.Exists(fullPath))
-            {
-                return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ReadFileRange), $"Error: File not found: `{fullPath}`"));
-            }
-
-            var result = new List<string>(lineCount);
-            var currentLineNumber = 0;
-            var endLine = checked(startLine + lineCount - 1);
-
-            foreach (var line in File.ReadLines(fullPath))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                currentLineNumber++;
-
-                if (currentLineNumber < startLine)
-                {
-                    continue;
-                }
-
-                if (currentLineNumber > endLine)
-                {
-                    break;
-                }
-
-                result.Add($"{currentLineNumber} | {line}");
-            }
-
-            if (result.Count == 0)
-            {
-                return Task.FromResult(ToolTelemetry.TraceAndReturn(
-                    nameof(ReadFileRange),
-                    $"Start line `{startLine}` is out of bounds for `{fullPath}` (file has {currentLineNumber} lines)."));
-            }
-
-            if (result.Count < lineCount)
-            {
-                result.Add($"[!] Reached end of file. Returned {result.Count} of requested {lineCount} lines.");
-            }
-
-            return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ReadFileRange), string.Join(Environment.NewLine, result)));
-        }
-        catch (OperationCanceledException)
-        {
-            return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ReadFileRange), "ReadFileRange was cancelled."));
-        }
-        catch (OverflowException)
-        {
-            return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ReadFileRange), "Error: `startLine + lineCount` is too large."));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ReadFileRange failed for {FilePath} from {StartLine} count {LineCount}", filePath, startLine, lineCount);
-            return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(ReadFileRange), $"Error: {ex.Message}"));
-        }
-    }
-
     [McpServerTool(Name = "search_code", Title = "SearchCode")]
     [Description(
-        "Searches source files like a lightweight ripgrep for LLM workflows. Returns matching lines with file path and line number, while limiting output to prevent context overflow. " +
+        "Searches source files like a lightweight ripgrep for LLM workflows. Returns matching lines with file path and line number. " +
+        "When the number of matches exceeds the cap, the full result (same markdown format) is written to a temp file and a short response (count + path + file summary) is returned — nothing is silently truncated. " +
         "When `directoryPath` is omitted, defaults to loaded workspace root (if available), otherwise current directory. By default scans only `.cs` files; override with `includeExtensions`. " +
         "Skips `bin`, `obj`, `.git`, and `.vs`. Default matching is case-insensitive; for leftover branding checks (e.g. exact `dupsFinder` after rename to `DupFinder`) set `caseSensitive=true`. " +
         "Relative `directoryPath` resolves against process CWD.")]
@@ -467,7 +119,7 @@ public sealed class UtilityTools
         [Description("Comma/semicolon/space-separated file extensions to scan (default: `.cs`). Example: `.cs,.csproj,.sln,.json`. Use `*` to scan all files.")] string? includeExtensions = ".cs",
         [Description("When true, interprets `pattern` as a .NET regular expression. When false, performs text search using Contains.")] bool useRegex = false,
         [Description("When false (default), matching is case-insensitive. When true, plain and regex matching are case-sensitive. Use true for leftover branding verification.")] bool caseSensitive = false,
-        [Description("Maximum number of matched lines to return. Limits output for LLM context protection. Default is 50.")] int maxResults = 50,
+        [Description("Cap on the number of matched lines (argument > config `max-results` > default 50). When exceeded, the full result is written to a temp file.")] int? maxResults = null,
         [Description("Maximum scan time in seconds. Default is 20; set 0 to disable timeout.")] int maxScanSeconds = 20,
         CancellationToken cancellationToken = default)
     {
@@ -478,7 +130,7 @@ public sealed class UtilityTools
                 return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(SearchCode), "Error: `pattern` is empty."));
             }
 
-            if (maxResults <= 0)
+            if (maxResults.HasValue && maxResults.Value <= 0)
             {
                 return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(SearchCode), "Error: `maxResults` must be greater than 0."));
             }
@@ -511,7 +163,8 @@ public sealed class UtilityTools
                 }
             }
 
-            var matches = new List<string>(Math.Min(maxResults, 200));
+            var matches = new List<string>();
+            var matchedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var filesScanned = 0;
             var directoriesStack = new Stack<string>();
             directoriesStack.Push(rootDirectory);
@@ -531,7 +184,7 @@ public sealed class UtilityTools
                 "SearchCode filter: includeExtensions={IncludeExtensions}",
                 extensionFilter.IncludeAll ? "*" : string.Join(",", extensionFilter.Extensions.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)));
 
-            while (directoriesStack.Count > 0 && matches.Count < maxResults && !timedOut)
+            while (directoriesStack.Count > 0 && !timedOut)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (scanTimeout != Timeout.InfiniteTimeSpan && stopwatch.Elapsed >= scanTimeout)
@@ -575,7 +228,7 @@ public sealed class UtilityTools
 
                 foreach (var file in files)
                 {
-                    if (matches.Count >= maxResults || timedOut)
+                    if (timedOut)
                     {
                         break;
                     }
@@ -627,10 +280,7 @@ public sealed class UtilityTools
                         }
 
                         matches.Add($"{file}:{lineNumber} | {line}");
-                        if (matches.Count >= maxResults)
-                        {
-                            break;
-                        }
+                        matchedFiles.Add(file);
                     }
                 }
             }
@@ -655,14 +305,11 @@ public sealed class UtilityTools
                     $"No matches found for `{pattern}` in `{rootDirectory}`."));
             }
 
+            var cap = SearchOverflowHelper.ResolveMaxResults(maxResults, _workspaceConfig);
+
             var result = new StringBuilder();
             result.AppendLine($"Found {matches.Count} match(es) for `{pattern}` in `{rootDirectory}`.");
             result.AppendLine($"Scanned files: {filesScanned}.");
-            if (matches.Count >= maxResults)
-            {
-                result.AppendLine($"[!] Reached maxResults limit ({maxResults}).");
-            }
-
             if (timedOut)
             {
                 result.AppendLine($"[!] Search timed out after {maxScanSeconds}s. Results are partial.");
@@ -683,7 +330,12 @@ public sealed class UtilityTools
                 timedOut,
                 stopwatch.ElapsedMilliseconds);
 
-            return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(SearchCode), result.ToString().TrimEnd()));
+            var fullMarkdown = result.ToString().TrimEnd();
+            var summary = BuildFileListSummary(matchedFiles);
+
+            return Task.FromResult(ToolTelemetry.TraceAndReturn(
+                nameof(SearchCode),
+                SearchOverflowHelper.CapOrWriteToTempFile(matches.Count, cap, fullMarkdown, summary)));
         }
         catch (OperationCanceledException)
         {
@@ -736,142 +388,28 @@ public sealed class UtilityTools
         return (false, extensions);
     }
 
-    [McpServerTool(Name = "apply_patch", Title = "ApplyPatch")]
-    [Description(
-        "Replaces `oldString` with `newString` in a file (the only search-and-replace tool; use `replaceAll=false` for a single occurrence, `replaceAll=true` for all matches). Line endings are normalized for matching (`\\r\\n` → `\\n`); output preserves CRLF when the file used it. Tries exact match on normalized text first, then whitespace-tolerant token matching (string literals with internal spaces may not match). replaceAll continues after each insert (does not rescan the replacement), so `Foo` → `Ns.Foos` is safe. "
-        + "Writes disk and updates the in-memory workspace for files already in the loaded solution.")]
-    public async Task<string> ApplyPatch(
-        [Description("Absolute path or workspace-relative path to the file that should be patched.")] string filePath,
-        [Description("Source fragment to find (exact or whitespace-tolerant; see tool description).")] string oldString,
-        [Description("Replacement text that will be inserted in place of the matched fragment(s).")] string newString,
-        [Description("When true, replaces all occurrences. When false, replaces only the first occurrence for safer edits.")] bool replaceAll = false,
-        CancellationToken cancellationToken = default)
+    private static string BuildFileListSummary(IEnumerable<string> files)
     {
-        var started = Stopwatch.StartNew();
-        var fullPath = filePath;
-        try
+        var distinct = files
+            .Where(f => !string.IsNullOrWhiteSpace(f))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (distinct.Count == 0)
         {
-            if (string.IsNullOrWhiteSpace(filePath))
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(ApplyPatch), "Error: `filePath` is empty.");
-            }
-
-            if (string.IsNullOrEmpty(oldString))
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(ApplyPatch), "Error: `oldString` is empty.");
-            }
-
-            fullPath = _solutionManager.ResolvePathAgainstWorkspace(filePath);
-            if (!File.Exists(fullPath))
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(ApplyPatch), $"Error: File not found: `{fullPath}`");
-            }
-
-            var sourceRaw = await File.ReadAllTextAsync(fullPath, cancellationToken);
-            var sourceNorm = PatchMatchHelper.NormalizeLineEndings(sourceRaw);
-            var oldNorm = PatchMatchHelper.NormalizeLineEndings(oldString);
-            var newNorm = PatchMatchHelper.NormalizeLineEndings(newString ?? string.Empty);
-            var newContainsOld = oldNorm.Length > 0
-                && newNorm.Contains(oldNorm, StringComparison.Ordinal);
-
-            _logger.LogInformation(
-                "ApplyPatch start file={FilePath} oldLen={OldLen} newLen={NewLen} sourceLen={SourceLen} replaceAll={ReplaceAll} newContainsOld={NewContainsOld}",
-                fullPath,
-                oldNorm.Length,
-                newNorm.Length,
-                sourceNorm.Length,
-                replaceAll,
-                newContainsOld);
-
-            string? updatedNorm;
-            var usedFlexible = false;
-            var replacementCount = 0;
-            try
-            {
-                updatedNorm = PatchMatchHelper.ApplyPatchWithFlexibleFallback(
-                    sourceNorm,
-                    oldNorm,
-                    newNorm,
-                    replaceAll,
-                    out usedFlexible,
-                    out var matched,
-                    out replacementCount,
-                    cancellationToken);
-                if (!matched)
-                {
-                    _logger.LogWarning(
-                        "ApplyPatch: could not match oldString in {FilePath} ({ElapsedMs}ms). {Diagnostic}",
-                        fullPath,
-                        started.ElapsedMilliseconds,
-                        PatchMatchHelper.BuildPatchFailureDiagnostic(oldNorm));
-                    return ToolTelemetry.TraceAndReturn(
-                        nameof(ApplyPatch),
-                        "Error: `oldString` was not found in the file (exact or whitespace-tolerant). Copy from read_file/read_file_range when possible.");
-                }
-            }
-            catch (RegexMatchTimeoutException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "ApplyPatch: regex match timeout for {FilePath} ({ElapsedMs}ms). {Diagnostic}",
-                    fullPath,
-                    started.ElapsedMilliseconds,
-                    PatchMatchHelper.BuildPatchFailureDiagnostic(oldNorm));
-                return ToolTelemetry.TraceAndReturn(
-                    nameof(ApplyPatch),
-                    "Error: Patch match timed out; try a shorter or more specific `oldString`.");
-            }
-
-            _logger.LogInformation(
-                "ApplyPatch matched file={FilePath} replacements={ReplacementCount} usedFlexible={UsedFlexible} matchMs={ElapsedMs}",
-                fullPath,
-                replacementCount,
-                usedFlexible,
-                started.ElapsedMilliseconds);
-
-            var updatedRaw = PatchMatchHelper.RestorePreferredLineEndings(sourceRaw, updatedNorm!);
-            if (string.Equals(sourceRaw, updatedRaw, StringComparison.Ordinal))
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(ApplyPatch), "No changes were applied.");
-            }
-
-            _solutionManager.SuppressDiskWatchForPath(fullPath);
-            await File.WriteAllTextAsync(fullPath, updatedRaw, cancellationToken);
-            var writeMs = started.ElapsedMilliseconds;
-            await _solutionManager.UpdateDocumentInMemoryAsync(fullPath, updatedRaw, cancellationToken);
-            _logger.LogInformation(
-                "ApplyPatch wrote file={FilePath} replacements={ReplacementCount} writeMs={WriteMs} workspaceMs={TotalMs}",
-                fullPath,
-                replacementCount,
-                writeMs,
-                started.ElapsedMilliseconds);
-            var note = usedFlexible ? " (whitespace-tolerant match)" : string.Empty;
-            return ToolTelemetry.TraceAndReturn(
-                nameof(ApplyPatch),
-                $"Patch applied successfully to `{fullPath}` ({replacementCount} replacement(s)).{note}");
+            return "(no matching files)";
         }
-        catch (OperationCanceledException)
-        {
-            _logger.LogWarning(
-                "ApplyPatch cancelled file={FilePath} after {ElapsedMs}ms",
-                fullPath,
-                started.ElapsedMilliseconds);
-            return ToolTelemetry.TraceAndReturn(nameof(ApplyPatch), "ApplyPatch was cancelled.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ApplyPatch failed for {FilePath} after {ElapsedMs}ms", fullPath, started.ElapsedMilliseconds);
-            return ToolTelemetry.TraceAndReturn(nameof(ApplyPatch), $"Error: {ex.Message}");
-        }
+
+        return string.Join(Environment.NewLine, distinct.Select(f => $"- `{f}`"));
     }
 
     [McpServerTool(Name = "run_format", Title = "RunFormat")]
     [Description(
         "Runs `dotnet format` to stabilize code style after edits. Supports verify-only mode (`--verify-no-changes`). "
         + "Fixed process timeout 300s. Prefer after bulk AST/patch edits. "
-        + "When not `verifyOnly`, formatted `.cs` on disk are picked up by the next symbol search without `reset_workspace`.")]
+        + "When not `verifyOnly`, formatted `.cs` on disk are picked up by the next symbol search (disk-sync) automatically.")]
     public async Task<string> RunFormat(
-        [Description("Path to a .sln, .slnx, .csproj, or directory — same parameter name as `load_workspace` / `run_dotnet_test` (directories allowed here; `run_dotnet_build` requires a file).")] string workspacePath,
+        [Description("Path to a .sln, .slnx, .csproj, or directory — same parameter name as `run_dotnet_test` (directories allowed here; `run_dotnet_build` requires a file).")] string workspacePath,
         [Description("When true, checks formatting without changing files (`--verify-no-changes`).")] bool verifyOnly = false,
         CancellationToken cancellationToken = default)
     {
@@ -934,12 +472,17 @@ public sealed class UtilityTools
     [Description(
         "Performs semantic C# symbol rename using Roslyn (types, members, namespaces as symbols — not project folders or docs). " +
         "Can preview impacted locations before applying changes, and can scope updates to a project or entire solution. " +
+        "Pass 1-based `line`/`column` (on the declaration or a usage) to select the exact symbol. " +
+        "Without a position, several same-named declarations in the file produce an error listing the candidates (FQN + line:col) — no blind first match. " +
         "Applies **saved** `.cs` from disk before resolving the symbol. " +
-        "For directory/.csproj/solution graph renames use `rename_project`. For README/rules/URLs use host Grep/edit.")]
+        "For directory/.csproj/solution graph renames use `rename_project`. For README/rules/URLs use host Grep/edit. " +
+        "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> RenameSymbol(
         [Description("Path to a C# file containing the target symbol declaration or usage.")] string filePath,
         [Description("Current symbol name to rename.")] string symbolName,
         [Description("New symbol name that should replace the current name.")] string newName,
+        [Description("1-based line of the target symbol (declaration or usage); must be provided together with `column`.")] int? line = null,
+        [Description("1-based column of the target symbol (declaration or usage); must be provided together with `line`.")] int? column = null,
         [Description("Rename scope: `project` (default) or `solution`.")] string scope = "project",
         [Description("When true, returns preview only and does not write any changes.")] bool previewOnly = true,
         CancellationToken cancellationToken = default)
@@ -956,7 +499,10 @@ public sealed class UtilityTools
                 return ToolTelemetry.TraceAndReturn(nameof(RenameSymbol), "Error: `filePath`, `symbolName`, and `newName` are required.");
             }
 
-            if (_solutionManager.GetCurrentSolution() is null)
+            // Lazy ensure path: loads the configured workspace when nothing is loaded yet (config-based,
+            // like all solution-wide methods); FindDocumentAsync below additionally covers walk-up.
+            var solution = await _solutionManager.GetCurrentSolutionAfterDiskSyncAsync(cancellationToken);
+            if (solution is null)
             {
                 return ToolTelemetry.TraceAndReturn(
                     nameof(RenameSymbol),
@@ -999,15 +545,69 @@ public sealed class UtilityTools
                 return ToolTelemetry.TraceAndReturn(nameof(RenameSymbol), "Error: Failed to obtain syntax root or semantic model.");
             }
 
-            var targetSymbol = ExtractTargetSymbol(root, semanticModel, symbolName, cancellationToken);
-            if (targetSymbol is null)
+            var hasLine = line.HasValue;
+            var hasColumn = column.HasValue;
+            if (hasLine != hasColumn)
             {
-                _logger.LogWarning(
-                    "RenameSymbol: symbol `{SymbolName}` not found for rename to `{NewName}` in `{FilePath}`.",
-                    symbolName,
-                    newName,
-                    filePath);
-                return ToolTelemetry.TraceAndReturn(nameof(RenameSymbol), $"Error: Symbol `{symbolName}` not found.");
+                return ToolTelemetry.TraceAndReturn(nameof(RenameSymbol), "Error: `line` and `column` must be provided together (both 1-based).");
+            }
+
+            ISymbol targetSymbol;
+            if (hasLine)
+            {
+                var text = await document.GetTextAsync(cancellationToken);
+                var (offset, positionError) = SourcePositionHelper.ToOffset(text, line!.Value, column!.Value);
+                if (positionError is not null)
+                {
+                    return ToolTelemetry.TraceAndReturn(nameof(RenameSymbol), $"Error: {positionError}");
+                }
+
+                var resolvedSymbol = SourcePositionHelper.GetSymbolAtPosition(root, semanticModel, offset, cancellationToken);
+                if (resolvedSymbol is null)
+                {
+                    _logger.LogWarning(
+                        "RenameSymbol: no symbol at line {Line}, column {Column} in `{FilePath}` for rename to `{NewName}`.",
+                        line!.Value,
+                        column!.Value,
+                        filePath,
+                        newName);
+                    return ToolTelemetry.TraceAndReturn(
+                        nameof(RenameSymbol),
+                        $"Error: No symbol found at line {line!.Value}, column {column!.Value} in `{fullPath}`.");
+                }
+
+                targetSymbol = resolvedSymbol;
+            }
+            else
+            {
+                var resolved = new List<(SyntaxNode Declaration, ISymbol Symbol)>();
+                foreach (var (declaration, variable) in FindSymbolDeclarations(root, symbolName))
+                {
+                    var symbol = semanticModel.GetDeclaredSymbol(variable ?? declaration, cancellationToken);
+                    if (symbol is not null)
+                    {
+                        resolved.Add((declaration, symbol));
+                    }
+                }
+
+                if (resolved.Count == 0)
+                {
+                    _logger.LogWarning(
+                        "RenameSymbol: symbol `{SymbolName}` not found for rename to `{NewName}` in `{FilePath}`.",
+                        symbolName,
+                        newName,
+                        filePath);
+                    return ToolTelemetry.TraceAndReturn(nameof(RenameSymbol), $"Error: Symbol `{symbolName}` not found.");
+                }
+
+                if (resolved.Count > 1)
+                {
+                    return ToolTelemetry.TraceAndReturn(
+                        nameof(RenameSymbol),
+                        BuildAmbiguousDeclarationsMessage(symbolName, fullPath, resolved));
+                }
+
+                targetSymbol = resolved[0].Symbol;
             }
 
             var baseSolution = _solutionManager.GetCurrentSolution() ?? document.Project.Solution;
@@ -1033,8 +633,8 @@ public sealed class UtilityTools
                 preview.AppendLine($"Affected locations: {affectedLocations.Count}");
                 foreach (var location in affectedLocations.Take(100))
                 {
-                    var line = location.Location.GetLineSpan().StartLinePosition.Line + 1;
-                    preview.AppendLine($"- {location.Document.FilePath}:{line}");
+                    var lineNumber = location.Location.GetLineSpan().StartLinePosition.Line + 1;
+                    preview.AppendLine($"- {location.Document.FilePath}:{lineNumber}");
                 }
                 if (affectedLocations.Count > 100)
                 {
@@ -1217,182 +817,67 @@ public sealed class UtilityTools
         }
     }
 
-    [McpServerTool(Name = "tail_tool_log", Title = "TailToolLog")]
-    [Description("Reads the latest MCP tool/server log file under `logs/mcp-*.log` as a shortcut over ReadLogTail.")]
-    public async Task<string> TailToolLog(
-        [Description("Number of lines to return from the end of the latest log file. Default is 200.")] int lastNLines = 200,
-        [Description("Optional case-insensitive keyword filter applied before taking the tail.")] string? filterKeyword = null,
-        CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Finds every declaration in <paramref name="root"/> whose name equals <paramref name="symbolName"/>
+    /// (class/struct/interface/enum/method/property; a <c>FieldDeclarationSyntax</c> contributes one match per
+    /// matching variable). Returns an empty list when nothing matches.
+    /// </summary>
+    private static List<(SyntaxNode Declaration, SyntaxNode? Variable)> FindSymbolDeclarations(SyntaxNode root, string symbolName)
     {
-        try
-        {
-            var logsDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
-            if (!Directory.Exists(logsDirectory))
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(TailToolLog), $"Error: Logs directory not found: `{logsDirectory}`");
-            }
-
-            var latestLog = Directory.EnumerateFiles(logsDirectory, "mcp-*.log", SearchOption.TopDirectoryOnly)
-                .Select(f => new FileInfo(f))
-                .OrderByDescending(f => f.LastWriteTimeUtc)
-                .FirstOrDefault();
-
-            if (latestLog is null)
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(TailToolLog), "No `mcp-*.log` files found.");
-            }
-
-            return await ReadLogTail(latestLog.FullName, lastNLines, filterKeyword, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "TailToolLog failed");
-            return ToolTelemetry.TraceAndReturn(nameof(TailToolLog), $"Error ({ex.GetType().Name}): {ex.Message}");
-        }
-    }
-
-    [McpServerTool(Name = "manage_agent_scratchpad", Title = "ManageAgentScratchpad")]
-    [Description(
-        "Manages the agent's long-term memory scratchpad at `.agent_memory/scratchpad.md` under process current directory "
-        + "(often the repo root when `ROSLYN_MCP_WORKSPACE` is set; otherwise may be the user profile). "
-        + "Supports read, write, append, and clear.")]
-    public async Task<string> ManageAgentScratchpad(
-        [Description("Action for the agent's long-term memory scratchpad. Allowed values: `read`, `write`, `append`, `clear`.")] string action,
-        [Description("Optional text payload for the agent's long-term memory scratchpad. Used by `write` and `append`; ignored by `read` and `clear`.")] string? content = null,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(action))
-            {
-                return ToolTelemetry.TraceAndReturn(nameof(ManageAgentScratchpad), "Error: `action` is empty.");
-            }
-
-            var normalizedAction = action.Trim().ToLowerInvariant();
-            if (normalizedAction is not ("read" or "write" or "append" or "clear"))
-            {
-                return ToolTelemetry.TraceAndReturn(
-                    nameof(ManageAgentScratchpad),
-                    "Error: Invalid `action`. Allowed values are `read`, `write`, `append`, `clear`.");
-            }
-
-            var memoryDirectory = Path.Combine(Environment.CurrentDirectory, AgentMemoryDirectoryName);
-            Directory.CreateDirectory(memoryDirectory);
-            var scratchpadPath = Path.Combine(memoryDirectory, ScratchpadFileName);
-
-            switch (normalizedAction)
-            {
-                case "read":
-                {
-                    if (!File.Exists(scratchpadPath))
-                    {
-                        return ToolTelemetry.TraceAndReturn(
-                            nameof(ManageAgentScratchpad),
-                            "Agent scratchpad is empty (file does not exist yet).");
-                    }
-
-                    var text = await File.ReadAllTextAsync(scratchpadPath, cancellationToken);
-                    if (string.IsNullOrWhiteSpace(text))
-                    {
-                        return ToolTelemetry.TraceAndReturn(
-                            nameof(ManageAgentScratchpad),
-                            "Agent scratchpad is empty.");
-                    }
-
-                    return ToolTelemetry.TraceAndReturn(nameof(ManageAgentScratchpad), text);
-                }
-
-                case "write":
-                {
-                    var text = content ?? string.Empty;
-                    await File.WriteAllTextAsync(scratchpadPath, text, cancellationToken);
-                    return ToolTelemetry.TraceAndReturn(
-                        nameof(ManageAgentScratchpad),
-                        $"Scratchpad saved ({text.Length} chars) to `{scratchpadPath}`.");
-                }
-
-                case "append":
-                {
-                    var text = content ?? string.Empty;
-                    if (!File.Exists(scratchpadPath))
-                    {
-                        await File.WriteAllTextAsync(scratchpadPath, text, cancellationToken);
-                        return ToolTelemetry.TraceAndReturn(
-                            nameof(ManageAgentScratchpad),
-                            $"Scratchpad created and appended ({text.Length} chars) to `{scratchpadPath}`.");
-                    }
-
-                    await File.AppendAllTextAsync(scratchpadPath, Environment.NewLine + text, cancellationToken);
-                    return ToolTelemetry.TraceAndReturn(
-                        nameof(ManageAgentScratchpad),
-                        $"Scratchpad appended ({text.Length} chars) to `{scratchpadPath}`.");
-                }
-
-                case "clear":
-                {
-                    if (File.Exists(scratchpadPath))
-                    {
-                        File.Delete(scratchpadPath);
-                    }
-
-                    return ToolTelemetry.TraceAndReturn(
-                        nameof(ManageAgentScratchpad),
-                        "Agent scratchpad cleared.");
-                }
-            }
-
-            return ToolTelemetry.TraceAndReturn(nameof(ManageAgentScratchpad), "Error: Unsupported action.");
-        }
-        catch (OperationCanceledException)
-        {
-            return ToolTelemetry.TraceAndReturn(nameof(ManageAgentScratchpad), "Scratchpad operation was cancelled.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ManageAgentScratchpad failed for action {Action}", action);
-            return ToolTelemetry.TraceAndReturn(nameof(ManageAgentScratchpad), $"Error: {ex.Message}");
-        }
-    }
-
-    private static ISymbol? ExtractTargetSymbol(
-        SyntaxNode root,
-        SemanticModel semanticModel,
-        string symbolName,
-        CancellationToken cancellationToken)
-    {
+        var matches = new List<(SyntaxNode Declaration, SyntaxNode? Variable)>();
         foreach (var node in root.DescendantNodes())
         {
-            cancellationToken.ThrowIfCancellationRequested();
             switch (node)
             {
                 case ClassDeclarationSyntax c when string.Equals(c.Identifier.Text, symbolName, StringComparison.Ordinal):
-                    return semanticModel.GetDeclaredSymbol(c, cancellationToken);
+                    matches.Add((node, null));
+                    break;
                 case StructDeclarationSyntax s when string.Equals(s.Identifier.Text, symbolName, StringComparison.Ordinal):
-                    return semanticModel.GetDeclaredSymbol(s, cancellationToken);
+                    matches.Add((node, null));
+                    break;
                 case InterfaceDeclarationSyntax i when string.Equals(i.Identifier.Text, symbolName, StringComparison.Ordinal):
-                    return semanticModel.GetDeclaredSymbol(i, cancellationToken);
+                    matches.Add((node, null));
+                    break;
                 case EnumDeclarationSyntax e when string.Equals(e.Identifier.Text, symbolName, StringComparison.Ordinal):
-                    return semanticModel.GetDeclaredSymbol(e, cancellationToken);
+                    matches.Add((node, null));
+                    break;
                 case MethodDeclarationSyntax m when string.Equals(m.Identifier.Text, symbolName, StringComparison.Ordinal):
-                    return semanticModel.GetDeclaredSymbol(m, cancellationToken);
+                    matches.Add((node, null));
+                    break;
                 case PropertyDeclarationSyntax p when string.Equals(p.Identifier.Text, symbolName, StringComparison.Ordinal):
-                    return semanticModel.GetDeclaredSymbol(p, cancellationToken);
+                    matches.Add((node, null));
+                    break;
                 case FieldDeclarationSyntax f:
-                {
-                    var v = f.Declaration.Variables.FirstOrDefault(x =>
-                        string.Equals(x.Identifier.Text, symbolName, StringComparison.Ordinal));
-                    if (v is not null)
+                    foreach (var variable in f.Declaration.Variables)
                     {
-                        return semanticModel.GetDeclaredSymbol(v, cancellationToken);
+                        if (string.Equals(variable.Identifier.Text, symbolName, StringComparison.Ordinal))
+                        {
+                            matches.Add((node, variable));
+                        }
                     }
 
                     break;
-                }
             }
         }
 
-        return null;
+        return matches;
+    }
+
+    private static string BuildAmbiguousDeclarationsMessage(
+        string symbolName,
+        string fullPath,
+        List<(SyntaxNode Declaration, ISymbol Symbol)> resolved)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Symbol `{symbolName}` matches {resolved.Count} declarations in `{fullPath}`. Provide 1-based `line`/`column` to select one:");
+        sb.AppendLine();
+        foreach (var (declaration, symbol) in resolved)
+        {
+            var pos = declaration.SyntaxTree.GetLineSpan(declaration.Span).StartLinePosition;
+            sb.AppendLine($"- {symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)} — {pos.Line + 1}:{pos.Character + 1}");
+        }
+
+        return sb.ToString().TrimEnd();
     }
 
     private static string? ExtractSimpleCsprojValue(string xml, string elementName)
@@ -1413,40 +898,5 @@ public sealed class UtilityTools
         }
 
         return xml[start..end].Trim();
-    }
-
-    private static void AppendDirectoryTree(StringBuilder sb, DirectoryInfo directory, int currentDepth, int maxDepth)
-    {
-        if (currentDepth >= maxDepth)
-        {
-            return;
-        }
-
-        var childDirectories = directory.GetDirectories()
-            .Where(d => !ExcludedDirectories.Contains(d.Name))
-            .OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var files = directory.GetFiles()
-            .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var entriesCount = childDirectories.Count + files.Count;
-        var index = 0;
-
-        foreach (var dir in childDirectories)
-        {
-            var isLast = ++index == entriesCount;
-            var prefix = isLast ? "└── " : "├── ";
-            sb.AppendLine($"{new string(' ', currentDepth * 4)}{prefix}{dir.Name}/");
-            AppendDirectoryTree(sb, dir, currentDepth + 1, maxDepth);
-        }
-
-        foreach (var file in files)
-        {
-            var isLast = ++index == entriesCount;
-            var prefix = isLast ? "└── " : "├── ";
-            sb.AppendLine($"{new string(' ', currentDepth * 4)}{prefix}{file.Name}");
-        }
     }
 }

@@ -23,7 +23,8 @@ public sealed class CodeFixTools
         "Returns Roslyn CodeAction fixes available for a compiler/analyzer diagnostic at a specific location. " +
         "Uses the workspace after applying **saved** `.cs` from disk. " +
         "Call get_diagnostics_for_file first to obtain diagnosticId, line, and column. " +
-        "Use the returned fixIndex with apply_code_fix. Prefer this over manually generating fix code.")]
+        "Use the returned fixIndex with apply_code_fix. Prefer this over manually generating fix code. " +
+        "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> GetCodeFixes(
         [Description("Absolute or workspace-relative path to the target .cs file.")] string filePath,
         [Description("Diagnostic id from get_diagnostics_for_file (e.g. CS0246, IDE0001).")] string diagnosticId,
@@ -83,7 +84,8 @@ public sealed class CodeFixTools
     [Description(
         "Applies a Roslyn CodeAction fix previously listed by get_code_fixes. " +
         "Writes changed files to disk and updates the in-memory workspace. " +
-        "Set previewOnly=true to see a diff without applying.")]
+        "Set previewOnly=true to see a diff without applying. " +
+        "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> ApplyCodeFix(
         [Description("Absolute or workspace-relative path to the target .cs file (same as get_code_fixes).")] string filePath,
         [Description("Diagnostic id from get_diagnostics_for_file / get_code_fixes.")] string diagnosticId,

@@ -21,7 +21,7 @@ public sealed class RefactoringTools
     [Description(
         "Extracts a public interface from a class: generates method/property/event signatures, optionally in a new file, " +
         "and adds the interface to the class base list. Use instead of manually authoring interface boilerplate. " +
-        "Requires `load_workspace`; applies **saved** `.cs` from disk before editing.")]
+        "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms. Applies **saved** `.cs` from disk before editing.")]
     public async Task<string> ExtractInterface(
         [Description("Absolute or workspace-relative path to the .cs file containing the class.")] string filePath,
         [Description("Name of the class to extract from (e.g. `OrderService`).")] string className,
@@ -63,53 +63,6 @@ public sealed class RefactoringTools
         {
             _logger.LogError(ex, "ExtractInterface failed for {ClassName} in {FilePath}", className, filePath);
             return ToolTelemetry.TraceAndReturn(toolName, $"Failed to extract interface: {ex.Message}");
-        }
-    }
-
-    [McpServerTool(Name = "move_type_to_new_file", Title = "Move type to its own file")]
-    [Description(
-        "Moves one or more top-level types from a multi-type .cs file into separate files named `{TypeName}.cs` " +
-        "(C# one-type-per-file convention). When `typeName` is omitted, moves every top-level type whose name " +
-        "does not match the current file name.")]
-    public async Task<string> MoveTypeToNewFile(
-        [Description("Absolute or workspace-relative path to the .cs file containing the type(s).")] string filePath,
-        [Description("Optional top-level type name to move. Omit to move all types not matching the file name.")] string? typeName = null,
-        [Description("When true, returns a preview without writing files.")] bool previewOnly = false,
-        CancellationToken cancellationToken = default)
-    {
-        const string toolName = nameof(MoveTypeToNewFile);
-
-        try
-        {
-            var resolvedPath = _solutionManager.ResolvePathAgainstWorkspace(filePath);
-            var document = await ResolveDocumentAsync(filePath, cancellationToken);
-            if (document is null)
-            {
-                return ToolTelemetry.TraceAndReturn(toolName, $"Document was not found in the active workspace: `{resolvedPath}`.");
-            }
-
-            var baseSolution = document.Project.Solution;
-            var (newSolution, preview) = await StructuralRefactoringHelper.MoveTypesToNewFilesAsync(
-                document, typeName, cancellationToken);
-
-            if (previewOnly)
-            {
-                return ToolTelemetry.TraceAndReturn(toolName, "Preview only — no files written." + Environment.NewLine + StructuralRefactoringHelper.FormatPreview(preview));
-            }
-
-            var writtenPaths = await _solutionManager.ApplySolutionChangesToDiskAsync(baseSolution, newSolution, cancellationToken);
-            return ToolTelemetry.TraceAndReturn(
-                toolName,
-                $"Move type applied. Files touched: {writtenPaths.Count}{Environment.NewLine}{StructuralRefactoringHelper.FormatPreview(preview)}");
-        }
-        catch (OperationCanceledException)
-        {
-            return ToolTelemetry.TraceAndReturn(toolName, "move_type_to_new_file was cancelled.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "MoveTypeToNewFile failed for {TypeName} in {FilePath}", typeName, filePath);
-            return ToolTelemetry.TraceAndReturn(toolName, $"Failed to move type: {ex.Message}");
         }
     }
 

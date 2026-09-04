@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+using RoslynMcpServer.Config;
 using RoslynMcpServer.Diagnostics;
 using RoslynMcpServer.Services;
 
@@ -11,24 +12,27 @@ public sealed class ServerLifecycleTools
 {
     private readonly IHostApplicationLifetime _lifetime;
     private readonly SolutionManager _solutionManager;
+    private readonly WorkspaceConfig _workspaceConfig;
     private readonly ILogger<ServerLifecycleTools> _logger;
 
     public ServerLifecycleTools(
         IHostApplicationLifetime lifetime,
         SolutionManager solutionManager,
+        WorkspaceConfig workspaceConfig,
         ILogger<ServerLifecycleTools> logger)
     {
         _lifetime = lifetime;
         _solutionManager = solutionManager;
+        _workspaceConfig = workspaceConfig;
         _logger = logger;
     }
 
     [McpServerTool(Name = "get_mcp_server_info", Title = "Get MCP server info")]
-    [Description("Returns binary path, tool count, log location, and workspace state — use to verify publish/reload.")]
+    [Description("Returns binary path, tool count, log location, loaded config path(s), workspace-path from config, and workspace state — use to verify publish/reload.")]
     public Task<string> GetMcpServerInfo(CancellationToken cancellationToken = default)
     {
         _ = cancellationToken;
-        var info = McpServerInfoHelper.BuildInfoMarkdown(_solutionManager.GetCurrentSolution());
+        var info = McpServerInfoHelper.BuildInfoMarkdown(_workspaceConfig, _solutionManager);
         return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(GetMcpServerInfo), info));
     }
 
@@ -36,7 +40,7 @@ public sealed class ServerLifecycleTools
     [Description(
         "Gracefully stops this Roslyn MCP server process after the tool returns. Use when you rebuilt the server itself (or need a clean process): then run dotnet build from a terminal if needed and restart MCP in Cursor. "
         + "Do **not** use this to refresh source after IDE/git saves — **saved** `.cs` sync automatically. "
-        + "For generated `obj` files or a stale `.csproj` graph: `reset_workspace` then `load_workspace` (no process kill).")]
+        + "For generated `obj` files or a stale `.csproj` graph: use `reload` (no process kill).")]
     public Task<string> StopMcpServer(CancellationToken cancellationToken = default)
     {
         _ = cancellationToken;
@@ -50,7 +54,7 @@ public sealed class ServerLifecycleTools
             + "2. From a terminal: `dotnet build` on RoslynMcpServer (or your solution).\n"
             + "3. In Cursor: MCP → Restart for this server (or reload the window).\n\n"
             + "**Without killing the process:** saved `.cs` already sync into symbol search. "
-            + "For generated `obj` / `.csproj` graph only: `reset_workspace`, then `load_workspace`.\n";
+            + "For generated `obj` / `.csproj` graph only: use `reload`.\n";
 
         return Task.FromResult(ToolTelemetry.TraceAndReturn(nameof(StopMcpServer), message.TrimEnd()));
     }

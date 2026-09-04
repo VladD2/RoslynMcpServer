@@ -77,7 +77,7 @@ function Test-RoslynAgentsInstructionsPresent {
     }
 
     return ($Content -match [regex]::Escape($AgentsMarker)) -and
-           ($Content -match 'load_workspace') -and
+           ($Content -match 'workspace-path') -and
            ($Content -match 'run_dotnet_build')
 }
 

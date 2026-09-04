@@ -21,9 +21,9 @@ public sealed class RunTools
         "Runs `dotnet run --project <csproj>` with pinned SDK (same as run_dotnet_build). "
         + "Default timeout **120s** (raise `timeoutSeconds` for long jobs; `0` = no timeout). "
         + "Returns separate stdout/stderr with size limits — use for console apps (progress on stderr). "
-        + "Do not use raw shell `dotnet run` or execute_dotnet_command for project runs.")]
+        + "Do not use the host bash tool to run `dotnet run` for project runs (use this tool).")]
     public async Task<string> RunDotNetRun(
-        [Description("Path to a .csproj (executable/worker project). Same roots as load_workspace / run_dotnet_build.")]
+        [Description("Path to a .csproj (executable/worker project). Same roots as run_dotnet_build.")]
         string workspacePath,
         [Description("Optional arguments after `--` (space-separated), e.g. `https://server/tfs/.../100` `--verbose`.")]
         string? arguments = null,

@@ -7,7 +7,6 @@ public static class McpToolRegistry
 {
     public static IReadOnlyList<Type> ToolTypes { get; } =
     [
-        typeof(RoslynTools),
         typeof(WorkspaceTools),
         typeof(CodeAnalysisTools),
         typeof(CodeFixTools),
@@ -15,7 +14,6 @@ public static class McpToolRegistry
         typeof(NavigationTools),
         typeof(RefactoringTools),
         typeof(AstTools),
-        typeof(EditingTools),
         typeof(BuildTools),
         typeof(RunTools),
         typeof(TestTools),

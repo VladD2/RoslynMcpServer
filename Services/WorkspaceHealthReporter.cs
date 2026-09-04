@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using Microsoft.CodeAnalysis;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using RoslynMcpServer.Hosting;
 
@@ -14,7 +15,8 @@ public static class WorkspaceHealthReporter
         Solution solution,
         string? configuration = null,
         string? platform = null,
-        string? targetFramework = null)
+        string? targetFramework = null,
+        ILogger? logger = null)
     {
         var fullPath = Path.GetFullPath(workspacePath);
         var workDir = WorkspaceRootResolver.ResolveDotNetWorkingDirectory(fullPath);
@@ -36,16 +38,17 @@ public static class WorkspaceHealthReporter
         sb.AppendLine($"- **global.json:** {(globalJson is null ? "(not found)" : $"`{globalJson}`")}");
         sb.AppendLine($"- **Pinned SDK (global.json):** {(pinnedSdk ?? "(none)")}");
         sb.AppendLine($"- **Resolved SDK directory:** {(sdkDir ?? "(not resolved)")}");
-        sb.AppendLine($"- **Restore assets:** {DescribeRestoreAssets(solution)}");
+        sb.AppendLine($"- **Restore assets:** {DescribeRestoreAssets(solution, logger)}");
         sb.AppendLine($"- **Registered MCP tools:** {CountRegisteredTools()} (use `get_mcp_server_info` for binary path)");
         sb.AppendLine();
         sb.AppendLine(
-            "> **Workflow:** Call `load_workspace` first. Build/test/run via `run_dotnet_build`, `run_dotnet_test`, `run_dotnet_run` — not raw shell `dotnet`. "
-            + "Find usages: `find_usages` / `find_symbol_references` (alias: find_references).");
+            "> **Workflow:** The workspace is loaded lazily from the `RoslynMcp.jsonc` config (`workspace-path`); use `reload` to force a reload after `dotnet build` or `.csproj`/`.sln`/`Directory.Build.props` changes. "
+            + "Build/test/run via `run_dotnet_build`, `run_dotnet_test`, `run_dotnet_run` — not raw shell `dotnet`. "
+            + "Find usages: `find_usages` / `find_symbol_references`.");
         return sb.ToString().TrimEnd();
     }
 
-    private static string DescribeRestoreAssets(Solution solution)
+    private static string DescribeRestoreAssets(Solution solution, ILogger? logger)
     {
         var projectPaths = solution.Projects
             .Select(p => p.FilePath)
@@ -59,6 +62,7 @@ public static class WorkspaceHealthReporter
         }
 
         var withAssets = 0;
+        var missingObj = 0;
         foreach (var csproj in projectPaths)
         {
             var projectDir = Path.GetDirectoryName(csproj);
@@ -67,16 +71,37 @@ public static class WorkspaceHealthReporter
                 continue;
             }
 
-            if (Directory.EnumerateFiles(Path.Combine(projectDir, "obj"), "project.assets.json", SearchOption.AllDirectories)
-                .Any())
+            var objDir = Path.Combine(projectDir, "obj");
+            if (!Directory.Exists(objDir))
+            {
+                // obj may be redirected (e.g. Directory.Build.props in a monorepo) — not a restore failure.
+                missingObj++;
+                logger?.LogDebug(
+                    "Restore assets: obj directory not found for {CsProj} (expected {ObjDir}); likely redirected — skipping asset check.",
+                    csproj,
+                    objDir);
+                continue;
+            }
+
+            if (Directory.EnumerateFiles(objDir, "project.assets.json", SearchOption.AllDirectories).Any())
             {
                 withAssets++;
             }
         }
 
-        return withAssets == projectPaths.Count
-            ? $"ok ({withAssets}/{projectPaths.Count} projects have obj/project.assets.json)"
-            : $"incomplete ({withAssets}/{projectPaths.Count} — run `dotnet restore` at solution root, then `reset_workspace` + `load_workspace`)";
+        if (missingObj > 0)
+        {
+            logger?.LogInformation(
+                "Restore assets: {MissingObj}/{Total} project(s) have no obj directory (possibly redirected).",
+                missingObj,
+                projectPaths.Count);
+        }
+
+        var missingObjNote = missingObj > 0 ? $", {missingObj} without obj (obj not found — redirected?)" : string.Empty;
+
+        return withAssets + missingObj == projectPaths.Count
+            ? $"ok ({withAssets}/{projectPaths.Count} projects have obj/project.assets.json{missingObjNote})"
+            : $"incomplete ({withAssets}/{projectPaths.Count} have obj/project.assets.json{missingObjNote} — run `dotnet restore` at solution root, then `reload`)";
     }
 
     public static int CountRegisteredTools()

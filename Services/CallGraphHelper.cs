@@ -10,25 +10,18 @@ public sealed record CallGraphNode(string DisplayName, string? FilePath, int? Li
 public sealed record CallGraphResult(
     string TargetDisplay,
     IReadOnlyList<CallGraphNode> Callers,
-    IReadOnlyList<CallGraphNode> Callees,
-    bool CallersTruncated,
-    bool CalleesTruncated);
+    IReadOnlyList<CallGraphNode> Callees);
 
 public static class CallGraphHelper
 {
-    private const int DefaultMaxNodes = 25;
-
     public static async Task<CallGraphResult> BuildCallGraphAsync(
         Solution solution,
         Document document,
         string className,
         string methodName,
-        int maxNodes,
         bool includeExternalCallees,
         CancellationToken cancellationToken)
     {
-        maxNodes = Math.Clamp(maxNodes, 1, 100);
-
         var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
         if (root is null || semanticModel is null)
@@ -47,17 +40,97 @@ public static class CallGraphHelper
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken) as IMethodSymbol
             ?? throw new InvalidOperationException($"Could not resolve symbol for `{className}.{methodName}`.");
 
+        return await BuildGraphForMethodAsync(
+            solution, methodSymbol, methodDecl, includeExternalCallees, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Builds the call graph for the method resolved at a 1-based <paramref name="line"/>/<paramref name="column"/>
+    /// position (LSP model) — on the declaration or an invocation (the declared symbol is used).
+    /// </summary>
+    public static async Task<CallGraphResult> BuildCallGraphAtPositionAsync(
+        Solution solution,
+        Document document,
+        int line,
+        int column,
+        bool includeExternalCallees,
+        CancellationToken cancellationToken)
+    {
+        var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+        if (root is null || semanticModel is null)
+        {
+            throw new InvalidOperationException("Could not obtain syntax tree or semantic model.");
+        }
+
+        var text = await document.GetTextAsync(cancellationToken).ConfigureAwait(false);
+        var (offset, positionError) = SourcePositionHelper.ToOffset(text, line, column);
+        if (positionError is not null)
+        {
+            throw new InvalidOperationException(positionError);
+        }
+
+        var symbolAtPosition = SourcePositionHelper.GetSymbolAtPosition(root, semanticModel, offset, cancellationToken);
+        if (symbolAtPosition is null)
+        {
+            throw new InvalidOperationException($"No symbol found at line {line}, column {column} in `{document.FilePath}`.");
+        }
+
+        var methodSymbol = symbolAtPosition as IMethodSymbol
+            ?? throw new InvalidOperationException(
+                $"The symbol at line {line}, column {column} is not a method (it is a {symbolAtPosition.Kind}).");
+
+        MethodDeclarationSyntax? methodDecl = null;
+        foreach (var syntaxReference in methodSymbol.DeclaringSyntaxReferences)
+        {
+            var syntax = await syntaxReference.GetSyntaxAsync(cancellationToken).ConfigureAwait(false);
+            if (syntax is MethodDeclarationSyntax method)
+            {
+                methodDecl = method;
+                break;
+            }
+        }
+
+        if (methodDecl is null)
+        {
+            throw new InvalidOperationException(
+                $"Could not find the declaring syntax for `{methodSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}`.");
+        }
+
+        return await BuildGraphForMethodAsync(
+            solution, methodSymbol, methodDecl, includeExternalCallees, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<CallGraphResult> BuildGraphForMethodAsync(
+        Solution solution,
+        IMethodSymbol methodSymbol,
+        MethodDeclarationSyntax methodDecl,
+        bool includeExternalCallees,
+        CancellationToken cancellationToken)
+    {
         var targetDisplay = methodSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
-        var callers = await CollectCallersAsync(solution, methodSymbol, maxNodes, cancellationToken).ConfigureAwait(false);
-        var callees = CollectCallees(semanticModel, methodDecl, solution, maxNodes, includeExternalCallees);
+        var callers = await CollectCallersAsync(solution, methodSymbol, cancellationToken).ConfigureAwait(false);
+        var declaringModel = await GetDeclaringSemanticModelAsync(solution, methodDecl, cancellationToken).ConfigureAwait(false);
+        var callees = CollectCallees(declaringModel, methodDecl, solution, includeExternalCallees);
 
         return new CallGraphResult(
             targetDisplay,
-            callers.Nodes,
-            callees.Nodes,
-            callers.Truncated,
-            callees.Truncated);
+            callers,
+            callees);
+    }
+
+    private static async Task<SemanticModel> GetDeclaringSemanticModelAsync(
+        Solution solution,
+        MethodDeclarationSyntax methodDecl,
+        CancellationToken cancellationToken)
+    {
+        var syntaxTree = methodDecl.SyntaxTree;
+        var document = syntaxTree is not null ? solution.GetDocument(syntaxTree) : null;
+        var semanticModel = document is not null
+            ? await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        return semanticModel ?? throw new InvalidOperationException("Could not obtain semantic model for the method declaration.");
     }
 
     public static string FormatMarkdown(CallGraphResult graph)
@@ -73,18 +146,13 @@ public static class CallGraphHelper
         {
             sb.AppendLine("- (none found in loaded solution)");
         }
-        else
-        {
-            foreach (var caller in graph.Callers)
+            else
             {
-                sb.AppendLine(FormatNode("- ", caller));
+                foreach (var caller in graph.Callers)
+                {
+                    sb.AppendLine(FormatNode("- ", caller));
+                }
             }
-
-            if (graph.CallersTruncated)
-            {
-                sb.AppendLine("- … truncated");
-            }
-        }
 
         sb.AppendLine();
         sb.AppendLine("### Callees (what this method calls)");
@@ -97,11 +165,6 @@ public static class CallGraphHelper
             foreach (var callee in graph.Callees)
             {
                 sb.AppendLine(FormatNode("- ", callee));
-            }
-
-            if (graph.CalleesTruncated)
-            {
-                sb.AppendLine("- … truncated");
             }
         }
 
@@ -118,15 +181,13 @@ public static class CallGraphHelper
         return $"{prefix}`{node.DisplayName}`";
     }
 
-    private static async Task<(List<CallGraphNode> Nodes, bool Truncated)> CollectCallersAsync(
+    private static async Task<List<CallGraphNode>> CollectCallersAsync(
         Solution solution,
         IMethodSymbol methodSymbol,
-        int maxNodes,
         CancellationToken cancellationToken)
     {
         var nodes = new List<CallGraphNode>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var truncated = false;
 
         var callersEnumerable = await SymbolFinder.FindCallersAsync(methodSymbol, solution, cancellationToken).ConfigureAwait(false);
         foreach (var caller in callersEnumerable)
@@ -158,26 +219,19 @@ public static class CallGraphHelper
             }
 
             nodes.Add(new CallGraphNode(display, filePath, line));
-            if (nodes.Count >= maxNodes)
-            {
-                truncated = true;
-                break;
-            }
         }
 
-        return (nodes, truncated);
+        return nodes;
     }
 
-    private static (List<CallGraphNode> Nodes, bool Truncated) CollectCallees(
+    private static List<CallGraphNode> CollectCallees(
         SemanticModel semanticModel,
         MethodDeclarationSyntax methodDecl,
         Solution solution,
-        int maxNodes,
         bool includeExternalCallees)
     {
         var nodes = new List<CallGraphNode>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var truncated = false;
 
         foreach (var invocation in methodDecl.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
@@ -222,14 +276,9 @@ public static class CallGraphHelper
             }
 
             nodes.Add(new CallGraphNode(display, filePath, line));
-            if (nodes.Count >= maxNodes)
-            {
-                truncated = true;
-                break;
-            }
         }
 
-        return (nodes.OrderBy(n => n.DisplayName, StringComparer.OrdinalIgnoreCase).ToList(), truncated);
+        return nodes.OrderBy(n => n.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private static bool IsSymbolFromLoadedSolution(ISymbol symbol, Solution solution)

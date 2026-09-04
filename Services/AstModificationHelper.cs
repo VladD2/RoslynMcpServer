@@ -9,50 +9,6 @@ namespace RoslynMcpServer.Services;
 
 public static class AstModificationHelper
 {
-    public static Task<Document> AddUsingAsync(Document document, string namespaceName, CancellationToken cancellationToken) =>
-        MutateAsync(document, async (doc, root, ct) =>
-        {
-            var compilationUnit = TypeSyntaxHelper.RequireCompilationUnit(root);
-            var normalized = NormalizeNamespace(namespaceName);
-            if (string.IsNullOrWhiteSpace(normalized))
-            {
-                throw new ArgumentException("Namespace name is empty.");
-            }
-
-            if (HasUsing(compilationUnit, normalized))
-            {
-                throw new InvalidOperationException($"Using `{normalized}` is already present in the file.");
-            }
-
-            var usingDirective = SyntaxFactory.UsingDirective(SyntaxFactory.ParseName(normalized))
-                .WithTrailingTrivia(SyntaxFactory.EndOfLine(Environment.NewLine));
-            return doc.WithSyntaxRoot(compilationUnit.WithUsings(compilationUnit.Usings.Add(usingDirective)));
-        }, cancellationToken);
-
-    public static Task<Document> RemoveUsingAsync(Document document, string namespaceName, CancellationToken cancellationToken) =>
-        MutateAsync(document, (doc, root, _) =>
-        {
-            var compilationUnit = TypeSyntaxHelper.RequireCompilationUnit(root);
-            var normalized = NormalizeNamespace(namespaceName);
-            var target = SyntaxFactory.ParseName(normalized).ToString();
-            UsingDirectiveSyntax? toRemove = null;
-            foreach (var u in compilationUnit.Usings)
-            {
-                if (u.Name is not null && string.Equals(u.Name.ToString(), target, StringComparison.Ordinal))
-                {
-                    toRemove = u;
-                    break;
-                }
-            }
-
-            if (toRemove is null)
-            {
-                throw new InvalidOperationException($"Using `{normalized}` was not found.");
-            }
-
-            return Task.FromResult(doc.WithSyntaxRoot(compilationUnit.RemoveNode(toRemove, SyntaxRemoveOptions.KeepNoTrivia)!));
-        }, cancellationToken);
-
     public static Task<Document> OrganizeUsingsAsync(Document document, bool removeUnused, CancellationToken cancellationToken) =>
         MutateAsync(document, async (doc, root, ct) =>
         {
@@ -73,9 +29,6 @@ public static class AstModificationHelper
 
             return doc.WithSyntaxRoot(compilationUnit.WithUsings(new SyntaxList<UsingDirectiveSyntax>(usings)));
         }, cancellationToken);
-
-    public static Task<Document> AddMethodToClassAsync(Document document, string className, string methodSource, CancellationToken cancellationToken) =>
-        AddMemberAsync(document, className, methodSource, m => m is MethodDeclarationSyntax, "method", cancellationToken);
 
     public static Task<Document> UpdateMethodBodyAsync(
         Document document,
@@ -104,50 +57,29 @@ public static class AstModificationHelper
             return doc.WithSyntaxRoot(newRoot);
         }, cancellationToken);
 
-    public static Task<Document> AddPropertyToClassAsync(Document document, string className, string propertySource, CancellationToken cancellationToken) =>
-        AddMemberAsync(document, className, propertySource, m => m is PropertyDeclarationSyntax, "property", cancellationToken);
-
-    public static Task<Document> AddFieldToClassAsync(Document document, string className, string fieldSource, CancellationToken cancellationToken) =>
-        AddMemberAsync(document, className, fieldSource, m => m is FieldDeclarationSyntax, "field", cancellationToken);
-
-    public static Task<Document> RemoveMemberAsync(Document document, string className, string memberName, CancellationToken cancellationToken) =>
-        MutateAsync(document, async (doc, root, ct) =>
-        {
-            var classDecl = TypeSyntaxHelper.FindClassDeclaration(root, className.Trim())
-                ?? throw new InvalidOperationException($"Class `{className}` not found.");
-
-            var member = classDecl.Members.FirstOrDefault(m => GetMemberName(m) == memberName.Trim())
-                ?? throw new InvalidOperationException($"Member `{memberName}` not found in class `{className}`.");
-
-            var editor = await DocumentEditor.CreateAsync(doc, ct).ConfigureAwait(false);
-            editor.RemoveNode(member);
-            return editor.GetChangedDocument();
-        }, cancellationToken);
-
-    public static string NormalizeNamespaceForDisplay(string raw) => NormalizeNamespace(raw);
-
-    private static async Task<Document> AddMemberAsync(
+    public static Task<Document> AddMemberAsync(
         Document document,
         string className,
         string memberSource,
-        Func<MemberDeclarationSyntax, bool> kindCheck,
-        string kindLabel,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(memberSource))
         {
-            throw new ArgumentException($"{kindLabel} source is empty.");
+            throw new ArgumentException("memberSource is empty.");
         }
 
         var member = SyntaxFactory.ParseMemberDeclaration(memberSource.Trim())
-            ?? throw new InvalidOperationException($"Could not parse {kindLabel} source.");
+            ?? throw new InvalidOperationException("Could not parse member source.");
 
-        if (!kindCheck(member))
+        if (member is not (MethodDeclarationSyntax or PropertyDeclarationSyntax or FieldDeclarationSyntax))
         {
-            throw new InvalidOperationException($"Source is not a {kindLabel} declaration.");
+            throw new InvalidOperationException(
+                $"Unsupported member kind `{member.GetType().Name}`. "
+                + "add_member supports method, property, or field declarations "
+                + "(events, constructors, records, and nested types are not supported).");
         }
 
-        return await MutateAsync(document, async (doc, root, ct) =>
+        return MutateAsync(document, async (doc, root, ct) =>
         {
             var classDecl = TypeSyntaxHelper.FindClassDeclaration(root, className.Trim())
                 ?? throw new InvalidOperationException($"Class `{className}` not found in file.");
@@ -168,15 +100,6 @@ public static class AstModificationHelper
         var updated = await mutate(document, root, cancellationToken).ConfigureAwait(false);
         return await Formatter.FormatAsync(updated, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
-
-    private static string? GetMemberName(MemberDeclarationSyntax member) => member switch
-    {
-        MethodDeclarationSyntax m => m.Identifier.Text,
-        PropertyDeclarationSyntax p => p.Identifier.Text,
-        EventDeclarationSyntax e => e.Identifier.Text,
-        FieldDeclarationSyntax f => f.Declaration.Variables.FirstOrDefault()?.Identifier.Text,
-        _ => null
-    };
 
     private static bool IsUsingUnused(UsingDirectiveSyntax usingDirective, CompilationUnitSyntax compilationUnit, SemanticModel model)
     {
@@ -230,33 +153,6 @@ public static class AstModificationHelper
         }
 
         return false;
-    }
-
-    private static string NormalizeNamespace(string raw)
-    {
-        var trimmed = raw.Trim();
-        if (trimmed.StartsWith("using ", StringComparison.OrdinalIgnoreCase))
-        {
-            trimmed = trimmed["using ".Length..].Trim();
-        }
-
-        if (trimmed.EndsWith(';'))
-        {
-            trimmed = trimmed[..^1].Trim();
-        }
-
-        return trimmed;
-    }
-
-    private static bool HasUsing(CompilationUnitSyntax compilationUnit, string namespaceName)
-    {
-        var target = SyntaxFactory.ParseName(namespaceName).ToString();
-        return compilationUnit.Usings.Any(u =>
-            u.Alias is null
-            && u.StaticKeyword.IsKind(SyntaxKind.None)
-            && u.GlobalKeyword.IsKind(SyntaxKind.None)
-            && u.Name is not null
-            && string.Equals(u.Name.ToString(), target, StringComparison.Ordinal));
     }
 
     private sealed class UsingDirectiveComparer : IEqualityComparer<UsingDirectiveSyntax>

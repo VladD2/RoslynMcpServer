@@ -31,9 +31,10 @@ public sealed class CodeAnalysisTools
         "Extracts the high-level skeleton (contract) of a C# file from the **loaded Roslyn workspace** "
         + "(applies **saved** `.cs` from disk first; unsaved editor buffers are ignored). "
         + "Returns namespaces, types, properties, and method signatures; method bodies omitted. "
-        + "Requires `load_workspace` and a document in that workspace. For raw disk with no workspace (or to skip the index) use `get_code_skeleton`; for NuGet/DLL types use `get_decompiled_class_skeleton`.")]
+        + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms. "
+        + "A document in that workspace is required. For raw disk with no workspace (or to skip the index) use `get_code_skeleton`; for NuGet/DLL types use `get_decompiled_class_skeleton`.")]
     public async Task<string> GetClassSkeleton(
-        [Description("Path to a .cs file in the loaded workspace (same argument name `filePath` as get_file_content).")]
+        [Description("Path to a .cs file in the loaded workspace.")]
         string filePath,
         CancellationToken cancellationToken = default)
     {
@@ -43,7 +44,7 @@ public sealed class CodeAnalysisTools
         {
             return ToolTelemetry.TraceAndReturn(
                 nameof(GetClassSkeleton),
-                $"The file was not found in the workspace: `{fullPath}`. Load the solution or load_workspace first, or verify the path.");
+                $"The file was not found in the workspace: `{fullPath}`. The workspace loads lazily from the config `workspace-path` (or via `reload`) — check the config or call `reload`, and verify the path.");
         }
 
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
@@ -72,9 +73,10 @@ public sealed class CodeAnalysisTools
     [McpServerTool(Name = "get_diagnostics_for_file", Title = "Get diagnostics for file")]
     [Description(
         "Returns Roslyn compiler diagnostics (Warning and Error) for a single C# file from the active workspace. "
-        + "Applies **saved** `.cs` from disk first; unsaved editor buffers are ignored.")]
+        + "Applies **saved** `.cs` from disk first; unsaved editor buffers are ignored. "
+        + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> GetDiagnosticsForFile(
-        [Description("Absolute or workspace-relative path to the target .cs file (same parameter name as get_file_content / find_symbol_references).")] string filePath,
+        [Description("Absolute or workspace-relative path to the target .cs file (same parameter name as find_symbol_references).")] string filePath,
         CancellationToken cancellationToken = default)
     {
         try
@@ -141,8 +143,7 @@ public sealed class CodeAnalysisTools
     [Description(
         "Opens an external assembly (NuGet or other DLL) with ILSpy and returns namespaces with visible top-level types. "
         + "Provide `assemblyName` (no `.dll`) or `assemblyPath` (absolute path to `.dll`). "
-        + "`assemblyName` resolves exactly as `{name}.dll` via workspace MetadataReferences → project `deps.json` → NuGet cache (no fuzzy match). "
-        + "Call `load_workspace` when using `assemblyName` only.")]
+        + "`assemblyName` resolves exactly as `{name}.dll` via workspace MetadataReferences → project `deps.json` → NuGet cache (no fuzzy match). ")]
     public Task<string> ExploreAssembly(
         [Description("Assembly simple name without `.dll` (e.g. `Microsoft.TeamFoundation.Client`). Exact `{name}.dll` via MetadataReferences → deps.json → NuGet.")] string? assemblyName = null,
         [Description("Absolute path to a `.dll` file. Bypasses workspace resolve.")] string? assemblyPath = null,
@@ -219,8 +220,7 @@ public sealed class CodeAnalysisTools
     [Description(
         "Decompiles a specific type from an external assembly into C# via ILSpy. "
         + "Resolve `assemblyName` (exact `{name}.dll`) via MetadataReferences → `deps.json` → NuGet cache, or pass `assemblyPath`. "
-        + "Then finds `fullTypeName` and returns decompiled source. Circuit breaker: ~500 lines — for large types use `get_decompiled_class_skeleton` / `get_decompiled_method_body`. "
-        + "Call `load_workspace` when using `assemblyName` only.")]
+        + "Then finds `fullTypeName` and returns decompiled source. Circuit breaker: ~500 lines — for large types use `get_decompiled_class_skeleton` / `get_decompiled_method_body`.")]
     public Task<string> DecompileType(
         [Description("Assembly simple name without `.dll`, or omit when `assemblyPath` is set. Exact resolve: MetadataReferences → deps.json → NuGet.")] string? assemblyName = null,
         [Description("Absolute path to a `.dll` file. Bypasses workspace resolve.")] string? assemblyPath = null,
@@ -303,7 +303,7 @@ public sealed class CodeAnalysisTools
     [Description(
         "Signatures-only C# skeleton for a type in an external assembly (no method bodies). "
         + "Resolve `assemblyName` exactly via MetadataReferences → `deps.json` → NuGet, or pass `assemblyPath`. "
-        + "Prefer this over `decompile_type` for large types. Call `load_workspace` when using `assemblyName` only.")]
+        + "Prefer this over `decompile_type` for large types.")]
     public Task<string> GetDecompiledClassSkeleton(
         [Description("Assembly simple name without `.dll`, or omit when `assemblyPath` is set. Exact resolve: MetadataReferences → deps.json → NuGet.")] string? assemblyName = null,
         [Description("Absolute path to a `.dll` file. Bypasses workspace resolve.")] string? assemblyPath = null,

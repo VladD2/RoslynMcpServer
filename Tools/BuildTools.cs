@@ -29,14 +29,14 @@ public sealed class BuildTools
         + "Surfaces `MCP_MSBUILD_SDK_MISMATCH` when MSBuild SDK ≠ global.json pin. "
         + "`workspacePath` must be a `.csproj`, `.sln`, or `.slnx` **file** (not a directory). Prefer solution files for multi-config repos. "
         + "Optional `configuration` maps to `dotnet build -c` (e.g. `Sit-Debug`, `Dit-Debug`) — required when the solution has multiple Debug-like configs. "
-        + "Omit `configuration`/`platform` to inherit values from the last `load_workspace`. "
+        + "Omit `configuration`/`platform` to inherit the values from the config (`RoslynMcp.jsonc` `configuration`/`platform`) or the loaded workspace. "
         + "No agent-tunable timeout. Use AFTER editing to verify compile.")]
     public async Task<string> RunDotNetBuild(
-        [Description("Path to a `.csproj`, `.sln`, or `.slnx` **file** (not a directory). Same parameter name as load_workspace / run_dotnet_test.")]
+        [Description("Path to a `.csproj`, `.sln`, or `.slnx` **file** (not a directory). Same parameter name as run_dotnet_test.")]
         string workspacePath,
         [Description(
             "Optional MSBuild configuration (`dotnet build -c`). Examples: `Debug`, `Release`, `Sit-Debug`, `Dit-Debug`. "
-            + "Omit to inherit `load_workspace` configuration, else the SDK/solution default (often wrong on multi-config `.slnx`).")]
+            + "Omit to inherit the config `configuration` (`RoslynMcp.jsonc`), else the SDK/solution default (often wrong on multi-config `.slnx`).")]
         string? configuration = null,
         [Description(
             "When true (default), pass `--no-incremental` on every `dotnet build` step so up-to-date skips cannot hide compile errors. "
@@ -44,7 +44,7 @@ public sealed class BuildTools
         bool noIncremental = true,
         [Description(
             "Optional MSBuild Platform (`dotnet build -p:Platform=`). Examples: `AnyCPU`, `x64`. `Any CPU` is normalized to `AnyCPU`. "
-            + "Omit to inherit `load_workspace` platform.")]
+            + "Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
         string? platform = null,
         CancellationToken cancellationToken = default)
     {

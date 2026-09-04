@@ -9,6 +9,7 @@ using Microsoft.CodeAnalysis.Host.Mef;
 using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.Logging;
+using RoslynMcpServer.Config;
 using RoslynMcpServer.Services;
 using Serilog;
 
@@ -39,6 +40,7 @@ public sealed class SolutionManager
     }
 
     private readonly ILogger<SolutionManager> _logger;
+    private readonly WorkspaceConfig _workspaceConfig;
     private readonly SemaphoreSlim _workspaceLock = new(1, 1);
     private readonly StringComparison _pathComparison =
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -60,9 +62,10 @@ public sealed class SolutionManager
     private string? _loadedTargetFramework;
     private IReadOnlyList<WorkspaceDiagnostic> _lastDiagnostics = Array.Empty<WorkspaceDiagnostic>();
 
-    public SolutionManager(ILogger<SolutionManager> logger)
+    public SolutionManager(ILogger<SolutionManager> logger, WorkspaceConfig workspaceConfig)
     {
         _logger = logger;
+        _workspaceConfig = workspaceConfig;
         _dirtySourcePaths = new ConcurrentDictionary<string, byte>(_pathComparer);
         _selfWriteUntilTicks = new ConcurrentDictionary<string, long>(_pathComparer);
     }
@@ -242,13 +245,37 @@ public sealed class SolutionManager
     }
 
     /// <summary>
-    /// Applies queued on-disk <c>.cs</c> changes (FileSystemWatcher dirty set) then returns the snapshot.
+    /// Lazily loads the configured workspace (<c>workspace-path</c> from <c>RoslynMcp.jsonc</c>) when nothing
+    /// is loaded yet, applies queued on-disk <c>.cs</c> changes (FileSystemWatcher dirty set), then returns the snapshot.
     /// Unsaved editor buffers are ignored — only files already written to disk.
+    /// A failed config load is logged and surfaces as a <see langword="null"/> solution (no workspace), not an exception.
     /// </summary>
     public async Task<Solution?> GetCurrentSolutionAfterDiskSyncAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureDiskChangesAppliedAsync(cancellationToken).ConfigureAwait(false);
-        return GetCurrentSolution();
+        // Single lock acquisition: LoadCoreAsync/FlushDirtyDocumentsUnderLockAsync require the caller to hold
+        // the lock (SemaphoreSlim is not reentrant — EnsureDiskChangesAppliedAsync must not be called here).
+        await _workspaceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            try
+            {
+                await TryLoadConfiguredWorkspaceUnderLockAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Lazy workspace load from config failed (workspace-path={WorkspacePath}); semantic tools will report no active workspace.",
+                    _workspaceConfig.WorkspacePath);
+            }
+
+            await FlushDirtyDocumentsUnderLockAsync(cancellationToken).ConfigureAwait(false);
+            return GetCurrentSolution();
+        }
+        finally
+        {
+            _workspaceLock.Release();
+        }
     }
 
     /// <summary>
@@ -470,12 +497,18 @@ public sealed class SolutionManager
 
     /// <summary>
     /// Must be called with <see cref="_workspaceLock"/> held.
+    /// Priority: config <c>workspace-path</c> (+ config properties), then walk-up from the file.
     /// </summary>
     private async Task EnsureWorkspaceLoadedForFileUnderLockAsync(
         string fullFilePath,
         CancellationToken cancellationToken)
     {
         if (_workspace is not null)
+        {
+            return;
+        }
+
+        if (await TryLoadConfiguredWorkspaceUnderLockAsync(cancellationToken).ConfigureAwait(false))
         {
             return;
         }
@@ -494,12 +527,53 @@ public sealed class SolutionManager
             throw new FileNotFoundException("Solution or project file not found.", candidateFull);
         }
 
+        // Walk-up load passes the config MSBuild properties (all null when the config omits them).
+        var (configuration, platform, targetFramework) = GetConfiguredLoadProperties();
         _ = await LoadCoreAsync(
             candidateFull,
-            configuration: null,
-            platform: null,
-            targetFramework: null,
+            configuration,
+            platform,
+            targetFramework,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Lazily loads the configured workspace (config <c>workspace-path</c> + <c>configuration</c> /
+    /// <c>platform</c> / <c>target-framework</c>) when nothing is loaded yet. Never reloads: an already
+    /// loaded workspace is kept as-is even if config values differ. Must be called with
+    /// <see cref="_workspaceLock"/> held.
+    /// </summary>
+    /// <returns><see langword="true"/> when the config <c>workspace-path</c> is set, <see langword="false"/> when it is not.</returns>
+    private async Task<bool> TryLoadConfiguredWorkspaceUnderLockAsync(CancellationToken cancellationToken)
+    {
+        var configuredPath = _workspaceConfig.WorkspacePath;
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return false;
+        }
+
+        if (_workspace is null)
+        {
+            var fullPath = Path.GetFullPath(configuredPath);
+            if (!File.Exists(fullPath))
+            {
+                throw new FileNotFoundException("Configured workspace file not found (config `workspace-path`).", fullPath);
+            }
+
+            var (configuration, platform, targetFramework) = GetConfiguredLoadProperties();
+            _ = await LoadCoreAsync(fullPath, configuration, platform, targetFramework, cancellationToken).ConfigureAwait(false);
+        }
+
+        return true;
+    }
+
+    /// <summary>Normalizes the config MSBuild properties for <see cref="LoadCoreAsync"/>.</summary>
+    private (string? Configuration, string? Platform, string? TargetFramework) GetConfiguredLoadProperties()
+    {
+        return (
+            DotNetConfigurationArguments.Normalize(_workspaceConfig.Configuration, nameof(_workspaceConfig.Configuration)),
+            DotNetConfigurationArguments.NormalizePlatform(_workspaceConfig.Platform),
+            DotNetConfigurationArguments.Normalize(_workspaceConfig.TargetFramework, nameof(_workspaceConfig.TargetFramework)));
     }
 
     /// <summary>

@@ -81,26 +81,6 @@ public static class InterfaceImplementationHelper
         return await Formatter.FormatAsync(changed, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    public static async Task<Document> AddTypeToClassBasesAsync(
-        Document document,
-        string className,
-        string typeName,
-        CancellationToken cancellationToken)
-    {
-        var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-        if (root is null)
-        {
-            throw new InvalidOperationException("Could not obtain syntax tree.");
-        }
-
-        var classDecl = TypeSyntaxHelper.FindClassDeclaration(root, className.Trim())
-            ?? throw new InvalidOperationException($"Class `{className}` not found in file.");
-
-        var updated = AddTypeToBaseList(classDecl, typeName.Trim());
-        var newDoc = document.WithSyntaxRoot(root.ReplaceNode(classDecl, updated));
-        return await Formatter.FormatAsync(newDoc, cancellationToken: cancellationToken).ConfigureAwait(false);
-    }
-
     private static INamedTypeSymbol? ResolveInterfaceSymbol(SemanticModel semanticModel, string interfaceName)
     {
         var compilation = semanticModel.Compilation;

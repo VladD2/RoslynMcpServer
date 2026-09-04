@@ -1,11 +1,6 @@
-using System.Text;
 using System.Text.Json;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Formatting;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Editing;
-using Microsoft.CodeAnalysis.Formatting;
 
 namespace RoslynMcpServer.Services;
 
@@ -68,44 +63,6 @@ public static class TestDiscoveryHelper
         }
 
         return Serialize(tests, truncated: false);
-    }
-
-    public static async Task<Document> GenerateTestMethodStubAsync(
-        Document document,
-        string className,
-        string methodName,
-        string? testFramework,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(methodName))
-        {
-            throw new ArgumentException("methodName is empty.");
-        }
-
-        var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-        if (root is null)
-        {
-            throw new InvalidOperationException("Could not obtain syntax tree.");
-        }
-
-        var classDecl = TypeSyntaxHelper.FindClassDeclaration(root, className.Trim())
-            ?? throw new InvalidOperationException($"Test class `{className}` not found.");
-
-        var framework = string.IsNullOrWhiteSpace(testFramework) ? "xunit" : testFramework.Trim().ToLowerInvariant();
-        var methodSource = framework switch
-        {
-            "nunit" => $"[Test] public void {methodName.Trim()}() {{ Assert.Fail(\"Not implemented\"); }}",
-            "mstest" => $"[TestMethod] public void {methodName.Trim()}() {{ Assert.Fail(\"Not implemented\"); }}",
-            _ => $"[Fact] public void {methodName.Trim()}() {{ throw new NotImplementedException(); }}"
-        };
-
-        var member = SyntaxFactory.ParseMemberDeclaration(methodSource)
-            ?? throw new InvalidOperationException("Failed to parse generated test stub.");
-
-        var editor = await DocumentEditor.CreateAsync(document, cancellationToken).ConfigureAwait(false);
-        editor.AddMember(classDecl, member);
-        var changed = editor.GetChangedDocument();
-        return await Formatter.FormatAsync(changed, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static bool HasTestAttribute(MethodDeclarationSyntax method, SemanticModel model)

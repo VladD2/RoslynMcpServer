@@ -26,7 +26,7 @@ public sealed class TestTools
         "so VSTest summary is not buried under MSBuild warnings. Build failure is reported and tests are not started. " +
         "After `run_dotnet_build`, pass `noBuild=true` (and optionally `noRestore=true`) to skip the extra compile. " +
         "Optional `configuration` maps to `dotnet test -c` (e.g. `Sit-Debug`) for multi-config solutions. " +
-        "Omit `configuration`/`platform` to inherit values from the last `load_workspace`. " +
+        "Omit `configuration`/`platform` to inherit the values from the config (`RoslynMcp.jsonc`) or the loaded workspace. " +
         "For long integration tests raise `timeoutSeconds` (e.g. 900/1800).")]
     public Task<string> RunDotNetTest(
         [Description("Path to .csproj, .sln, .slnx, or test project directory (directories allowed; unlike `run_dotnet_build` which requires a file). Prefer `.sln`/`.slnx` for multi-config solutions.")]
@@ -39,10 +39,10 @@ public sealed class TestTools
         bool noRestore = false,
         [Description(
             "Optional MSBuild configuration (`dotnet test -c`). Examples: `Debug`, `Release`, `Sit-Debug`, `Dit-Debug`. "
-            + "Omit to inherit `load_workspace` configuration, else the SDK/solution default (often wrong on multi-config `.slnx`).")]
+            + "Omit to inherit the config `configuration` (`RoslynMcp.jsonc`), else the SDK/solution default (often wrong on multi-config `.slnx`).")]
         string? configuration = null,
         [Description(
-            "Optional MSBuild Platform (`dotnet test -p:Platform=`). Examples: `AnyCPU`, `x64`. Omit to inherit `load_workspace` platform.")]
+            "Optional MSBuild Platform (`dotnet test -p:Platform=`). Examples: `AnyCPU`, `x64`. Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
         string? platform = null,
         CancellationToken cancellationToken = default)
     {
@@ -64,7 +64,7 @@ public sealed class TestTools
     [Description(
         "Runs `dotnet test` filtered to a single test class and/or method. Builds a VSTest-safe `--filter` internally " +
         "(`FullyQualifiedName~…`, method FQN without `()`, no bogus leading `.` on dotted names) — " +
-        "do not use `execute_dotnet_command` or hand-written FullyQualifiedName filters. " +
+        "do not use the host bash tool or hand-written FullyQualifiedName filters. " +
         "When the Roslyn workspace is loaded, resolves the type/method FQN for precise contains filtering "
         + "(after applying **saved** `.cs` from disk). " +
         "Prefer `className` + short `methodName`. Use for TDD and bug fixes instead of running the full suite. " +
@@ -72,7 +72,7 @@ public sealed class TestTools
         "When `noBuild=false` (default), compiles with a separate `dotnet build` then `dotnet test --no-build --no-restore` " +
         "(same isolation as `run_dotnet_test`; VSTest summary is parsed without MSBuild warning dumps). " +
         "After `run_dotnet_build`, pass `noBuild=true` (and optionally `noRestore=true`). " +
-        "Optional `configuration` maps to `dotnet test -c` (same as `run_dotnet_test`). Omit `configuration`/`platform` to inherit `load_workspace`. Raise `timeoutSeconds` for slow tests.")]
+        "Optional `configuration` maps to `dotnet test -c` (same as `run_dotnet_test`). Omit `configuration`/`platform` to inherit from the config (`RoslynMcp.jsonc`). Raise `timeoutSeconds` for slow tests.")]
     public async Task<string> RunSpecificTest(
         [Description("Path to .csproj, .sln, .slnx, or test project directory (same as run_dotnet_test; directories allowed). Prefer `.sln`/`.slnx` for multi-config solutions.")]
         string workspacePath,
@@ -88,10 +88,10 @@ public sealed class TestTools
         bool noRestore = false,
         [Description(
             "Optional MSBuild configuration (`dotnet test -c`). Examples: `Debug`, `Release`, `Sit-Debug`, `Dit-Debug`. "
-            + "Omit to inherit `load_workspace` configuration, else the SDK/solution default (often wrong on multi-config `.slnx`).")]
+            + "Omit to inherit the config `configuration` (`RoslynMcp.jsonc`), else the SDK/solution default (often wrong on multi-config `.slnx`).")]
         string? configuration = null,
         [Description(
-            "Optional MSBuild Platform (`dotnet test -p:Platform=`). Examples: `AnyCPU`, `x64`. Omit to inherit `load_workspace` platform.")]
+            "Optional MSBuild Platform (`dotnet test -p:Platform=`). Examples: `AnyCPU`, `x64`. Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
         string? platform = null,
         CancellationToken cancellationToken = default)
     {
@@ -142,7 +142,7 @@ public sealed class TestTools
     [Description(
         "Returns JSON list of test methods (Fact/Theory/TestMethod/etc.) from the **currently loaded** Roslyn workspace "
         + "(applies **saved** `.cs` from disk first). "
-        + "Empty list (`count: 0`) is an agent signal that the wrong `.csproj` may be loaded — call `load_workspace` on the test `.sln`/`.slnx` first.")]
+        + "Empty list (`count: 0`) is an agent signal that the wrong `.csproj` may be loaded — reload the test `.sln`/`.slnx` via `reload` (or set `workspace-path` in `RoslynMcp.jsonc`) first.")]
     public async Task<string> GetTestList(
         [Description("Maximum tests to return (default 200).")] int maxResults = 200,
         CancellationToken cancellationToken = default)
@@ -202,42 +202,6 @@ public sealed class TestTools
         catch (System.Text.Json.JsonException)
         {
             return false;
-        }
-    }
-
-    [McpServerTool(Name = "generate_test_method_stub", Title = "Generate test method stub")]
-    [Description("Inserts a test method stub ([Fact]/[Test]/[TestMethod]) into a test class via Roslyn AST.")]
-    public async Task<string> GenerateTestMethodStub(
-        [Description("Absolute or workspace-relative path to the test .cs file.")] string filePath,
-        [Description("Test class name that will receive the stub.")] string className,
-        [Description("New test method name to insert.")] string methodName,
-        [Description("xunit (default), nunit, or mstest.")] string? testFramework = null,
-        CancellationToken cancellationToken = default)
-    {
-        const string toolName = nameof(GenerateTestMethodStub);
-        try
-        {
-            var fullPath = _solutionManager.ResolvePathAgainstWorkspace(filePath);
-            var document = await _solutionManager.FindDocumentAsync(fullPath, cancellationToken).ConfigureAwait(false);
-            if (document is null)
-            {
-                return ToolTelemetry.TraceAndReturn(toolName, $"Document not in workspace: `{fullPath}`.");
-            }
-
-            var baseSolution = document.Project.Solution;
-            var newDocument = await TestDiscoveryHelper.GenerateTestMethodStubAsync(
-                document, className, methodName, testFramework, cancellationToken).ConfigureAwait(false);
-            var written = await _solutionManager.ApplySolutionChangesToDiskAsync(
-                baseSolution, newDocument.Project.Solution, cancellationToken).ConfigureAwait(false);
-
-            return ToolTelemetry.TraceAndReturn(
-                toolName,
-                $"Added test stub `{methodName}` to `{className}`. Files touched: {written.Count}.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "GenerateTestMethodStub failed");
-            return ToolTelemetry.TraceAndReturn(toolName, $"Failed: {ex.Message}");
         }
     }
 

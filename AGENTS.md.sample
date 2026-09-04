@@ -12,54 +12,55 @@ You are a Senior C# Developer and Architect using Roslyn MCP. Follow the policy 
 
 ## Quick path
 
-1. **Read-only** (where is X?): `load_workspace` → `find_symbol_definition` / `find_usages` / `get_class_skeleton`. Host **Grep** only for plain text (strings, comments, non-C#). If unsure the workspace is loaded, call `load_workspace` again (idempotent; also flushes saved `.cs` from disk). Unsaved editor buffers are not in the Roslyn index.
+1. **Read-only** (where is X?): the workspace is loaded **lazily by default** from `RoslynMcp.jsonc` (`workspace-path`) — there is **no workspace-load tool to call**. The **first** semantic call after server start can take **minutes** (workspace load), so allow for that delay. Then `find_symbol_definition` / `find_usages` / `get_class_skeleton`. Host **Grep** only for plain text (strings, comments, non-C#). Unsaved editor buffers are not in the Roslyn index.
 2. **Edit / build / test / run**: full init → MCP `dotnet_*` only (never shell `dotnet build` / `dotnet test`).
 3. **C# identifier** (type, method, extension): **MCP first** — not host Grep / `search_code` as the opening move. Grep is fallback after MCP finds nothing.
 4. **Secrets**: never paste PAT/passwords into chat or commits; env / user-secrets (see Secrets).
 5. **E2E HTTP/TFS**: no MCP probe — `run_dotnet_run` on a reachable network or skip in headless CI.
 
-## Full init (edit, build, test, run, decompile)
+## Workspace (config)
 
-1. **Required:** `load_workspace` with absolute `workspacePath` to this repo's `.sln`, `.slnx`, or entry `.csproj` (prefer solution files). Resolve path via IDE workspace / `list_directory_tree` — never hardcode paths from docs. Response includes workspace health (SDK pin, restore, tool count).
-2. Set `ROSLYN_MCP_WORKSPACE` in MCP config to the **repo root** (folder with `global.json`) when present. Relative `filePath` resolves against the loaded workspace.
-3. If `load_workspace` returns **Workspace Load Failed (missing Compile target)**: retry with `targetFramework` set to **one** inner TFM from that report (from `Directory.Build.props`, e.g. `net10.0`) — same idea as `dotnet build -f`. This is CrossTargeting, not SDK mismatch; do not fall back to shell `dotnet`. Analyzer-only projects may still fail under that TFM; app/library projects usually load. If it still fails: `get_code_skeleton` / host Grep; `run_dotnet_build` / `run_dotnet_test` still work.
-4. If `load_workspace` / `find_symbol_*` returns **Workspace Load Failed (VS 2026 / MSBuild 18 BuildHost)** (`XMakeElements`): this is **not** `MCP_MSBUILD_SDK_MISMATCH`. Need MCP **1.0.35+**. Workaround: `load_workspace` on a single SDK-style `.csproj`. `search_code` / host Grep still work.
+1. **Where:** the workspace comes from the **`RoslynMcp.jsonc`** config file, merged from two places (exe directory, then current working directory — cwd wins). Set **`workspace-path`** to this repo's `.sln`, `.slnx`, or entry `.csproj` (prefer solution files). Optional: `configuration` (e.g. `Sit-Debug`), `platform`, `target-framework` (inner TFM for `TargetFrameworks`).
+2. **Lazy load:** the workspace is loaded **lazily** on the first semantic call — no startup cost, but the **first** call after server start can take **minutes**. If an explicit (re)load is needed, use **`reload`**.
+3. **After `dotnet build` / `.csproj` / `.sln` / `Directory.Build.props` edits:** call **`reload`** (disposes and re-loads the workspace; args override the config). Ordinary `.cs` saves need no reload — saved files sync automatically (disk-sync).
+4. If `reload` returns **Workspace Load Failed (missing Compile target)**: retry `reload` with `targetFramework` set to **one** inner TFM from that report (from `Directory.Build.props`, e.g. `net10.0`) — same idea as `dotnet build -f`. This is CrossTargeting, not SDK mismatch; do not fall back to shell `dotnet`. If it still fails: `get_code_skeleton` / host Grep; `run_dotnet_build` / `run_dotnet_test` still work.
+5. If `reload` / `find_symbol_*` returns **Workspace Load Failed (VS 2026 / MSBuild 18 BuildHost)** (`XMakeElements`): this is **not** `MCP_MSBUILD_SDK_MISMATCH`. Need MCP **1.0.35+**. Workaround: `reload` on a single SDK-style `.csproj`. `search_code` / host Grep still work.
 
-Skip full init for a one-line read-only answer if `load_workspace` already succeeded in this chat.
+Skip full init for a one-line read-only answer once the workspace is loaded in this chat.
 
 ## Search (MCP vs host)
 
 - **Never** shell `grep` / `Select-String` / `find`.
-- **C# symbols** (after `load_workspace`): `find_symbol_definition`, `find_usages` (prefer when only name known), `find_symbol_references` (when you know declaring `filePath`). Interfaces/bases → `find_implementations`, not `find_usages`.
+- **C# symbols**: `find_symbol_definition`, `find_usages` (prefer when only name known), `find_symbol_references` (when you know declaring `filePath`). Interfaces/bases → `find_implementations`, not `find_usages`. Pass an exact FQN (or a 1-based `line`/`column` for `find_symbol_references`) to disambiguate overloads.
 - **Plain text**: host Grep / SemanticSearch OK; also fallback if MCP has no symbol.
-- Layout: `list_directory_tree` or host file tree. Leftover branding token checks: `search_code` with `caseSensitive=true` (see Description).
+- Layout: host file tree / host Grep. Leftover branding token checks: `search_code` with `caseSensitive=true` (see Description).
 
 ## Build, test, run
 
 - **Build / test / run / NuGet audit:** `run_dotnet_build`, `run_dotnet_test` / `run_specific_test`, `run_dotnet_run`, `run_nuget_audit` — never raw shell `dotnet` for these. Read structured errors and Key lines; on `MCP_MSBUILD_SDK_MISMATCH` fix the environment before app code. `run_dotnet_build` defaults to `--no-incremental` (trust over speed); pass `configuration` on multi-config solutions. If MCP build is green but local `dotnet build` is red, compare WorkingDirectory / `Configuration` / `NoIncremental` in the tool metadata — there is no MCP result cache.
-- **OpenCode:** host MCP call timeout (~60s → `-32001`) is separate from tool `timeoutSeconds` — set server `"timeout": 600000` in `opencode.json` (see `install2opencode.ps1`).
-- **Commit scope:** `get_changed_files` for paths; host/shell `git diff` for the body when allowed (MCP has no full diff).
+- **OpenCode:** host MCP call timeout (~60s → `-32001`) is separate from tool `timeoutSeconds` — set server `"timeout": 600000` in `opencode.json` (see `install2opencode.ps1`). This matters for the **first lazy workspace load** (minutes).
+- **Commit scope and diffs:** host `git status` / `git diff` — MCP has no changed-files tool.
 - Windows PowerShell 5.x: `;` between commands, not `&&`.
 
-On tool failure: fix args and retry MCP — do not fall back to shell `dotnet`. Logs: `tail_tool_log` / `read_log_tail`.
+On tool failure: fix args and retry MCP — do not fall back to shell `dotnet`. Logs: host `read` (the server log is `logs/mcp-*.log`).
 
 ## Branding / rename (hybrid)
 
-1. `load_workspace` on the real `.sln`/`.slnx`
+1. `reload` (or config `workspace-path`) on the real `.sln`/`.slnx` — lazily, first call may take minutes
 2. `rename_symbol` / `find_usages` for **C# symbols only**
 3. `rename_project` (`dryRun=true` first) for folder / `.csproj` / refs / solution entries
 4. Host Grep/edit for README, rules, URLs, Docker, CI
-5. `reset_workspace` → `load_workspace` → `run_dotnet_build` / `run_dotnet_test`
+5. `reload` → `run_dotnet_build` / `run_dotnet_test`
 
 Do not mix `get_code_skeleton(path=…)` (disk `.cs`) with decompile tools (`assemblyName` / `assemblyPath`) — see Descriptions.
 
 ## File editing
 
-- **IDE (Cursor etc.):** host `edit` / `write` when review UI matters — not MCP `apply_patch` / `update_file_content`.
-- **Headless:** MCP `apply_patch` / `update_file_content`; prefer AST tools for usings/method bodies.
+- **File read/write/edit:** use the **host tools** (`read` / `write` / `edit` / `bash` / `git`) — MCP no longer owns full-file read/write or patch.
+- **C# AST edits:** use MCP `add_member` (insert method/property/field), `update_method_body`, `organize_usings`, `implement_interface`, `extract_interface` — for syntax-safe, region-aware changes.
 - **Refactor:** `rename_symbol` with `previewOnly=true` first (not project folders).
-- After MCP server rebuild: `get_mcp_server_info` (expect **v1.1.0+**).
-- **Saved** `.cs` (host edit/write, git, `dotnet format`) sync into the semantic index automatically. `reset_workspace` is for generated `obj` files / project-file graph after build — not for ordinary source saves.
+- After MCP server rebuild: `get_mcp_server_info` (expect **40** tools).
+- **Saved** `.cs` (host edit/write, git, `dotnet format`) sync into the semantic index automatically; `reload` is for generated `obj` files / project-file graph after build — not for ordinary source saves.
 
 ## Secrets
 
@@ -73,7 +74,7 @@ Portable `AGENTS.md` is not enough. Each app should document:
 
 | Where | Content |
 |-------|---------|
-| README (Agent section) | Executable `.csproj` for `run_dotnet_run`, sample args, `global.json` pin |
+| README (Agent section) | Executable `.csproj` for `run_dotnet_run`, sample args, `global.json` pin, any `RoslynMcp.jsonc` `workspace-path`/`configuration`/`target-framework` |
 | `.cursor/rules` (optional) | Integration notes, secret **names** (not values) |
 
 Tool history: RoslynMcpServer README «Agent tools by version».

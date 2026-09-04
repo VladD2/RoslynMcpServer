@@ -1,5 +1,7 @@
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using RoslynMcpServer.Config;
 using RoslynMcpServer.Tools;
 using Xunit;
 
@@ -87,7 +89,7 @@ public sealed class SolutionManagerPathResolutionTests
             """);
 
         var manager = CreateManager(solutionPath);
-        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager);
+        var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
 
         try
         {
@@ -107,7 +109,7 @@ public sealed class SolutionManagerPathResolutionTests
 
     private static SolutionManager CreateManager(string? loadedPath = null)
     {
-        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance);
+        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, new WorkspaceConfig(new ConfigurationBuilder().Build()));
         if (!string.IsNullOrWhiteSpace(loadedPath))
         {
             typeof(SolutionManager)
