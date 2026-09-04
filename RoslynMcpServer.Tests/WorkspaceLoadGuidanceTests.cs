@@ -189,6 +189,28 @@ public sealed class WorkspaceLoadGuidanceTests
         }
     }
 
+    /// <summary>
+    /// F9.1: `reload` without `workspacePath` and without a configured `workspace-path` returns the error
+    /// immediately (no MSBuild load): the expected config keys (exe dir or cwd, cwd wins) plus the note
+    /// that file-scoped semantic tools auto-load (config first, then walk-up) without `workspace-path`.
+    /// </summary>
+    [Fact]
+    public async Task Reload_without_workspace_path_returns_config_keys_and_file_scoped_hint()
+    {
+        var config = new WorkspaceConfig(new ConfigurationBuilder().Build());
+        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
+        var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
+
+        var result = await tools.Reload();
+
+        Assert.StartsWith("Error: no workspace path", result, StringComparison.Ordinal);
+        Assert.Contains("workspace-path", result, StringComparison.Ordinal);
+        Assert.Contains("`configuration`/`platform`/`target-framework`", result, StringComparison.Ordinal);
+        Assert.Contains("exe dir or cwd", result, StringComparison.Ordinal);
+        Assert.Contains("File-scoped semantic tools", result, StringComparison.Ordinal);
+        Assert.Contains("walk-up", result, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void FormatClientCancelledWorkspaceLoadMessage_is_explicit_abort_not_msbuild()
     {

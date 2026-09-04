@@ -1,0 +1,21 @@
+// RoslynMcp.jsonc — RoslynMcpServer configuration (JSONC: JSON with // comments).
+//
+// Read from two places and merged: the exe directory first, then the current working
+// directory (cwd wins for conflicting keys). Copy this file to the exe directory for
+// global defaults / to the project root for per-project overrides (cwd wins).
+{
+  // Workspace: .sln / .slnx / .csproj loaded lazily on the first semantic call
+  // (the first load of a large solution can take minutes — raise the host MCP timeout).
+  // Relative values resolve against the MCP process current directory (not the exe directory) — prefer absolute paths.
+  "workspace-path": "F:/src/MyApp/MyApp.sln",
+
+  // Optional MSBuild global properties. Inherited by run_dotnet_build / run_dotnet_test /
+  // run_specific_test when their own arguments are omitted.
+  "configuration": "Sit-Debug",    // MSBuild Configuration (e.g. Debug, Release, Sit-Debug)
+  "platform": "AnyCPU",            // MSBuild Platform (e.g. AnyCPU, x64)
+  "target-framework": "net10.0",   // MSBuild TargetFramework — inner TFM when the solution uses TargetFrameworks
+
+  // Search output (optional).
+  "max-results": 50,               // unified cap for find_*/search_code results (default 50); per-call argument overrides it
+  "preview": false                 // default for the preview argument of find_* (include source line text; false — the model decides)
+}

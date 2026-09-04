@@ -379,7 +379,14 @@ public sealed class WorkspaceTools
         {
             var sb = new StringBuilder();
             sb.AppendLine(
-                "Error: no workspace path — pass `workspacePath` to `reload` or set `workspace-path` in `RoslynMcp.jsonc`.");
+                "Error: no workspace path — set `workspace-path` (+ optional `configuration`/`platform`/`target-framework`) in `RoslynMcp.jsonc` "
+                + "(exe dir or cwd, cwd wins), or pass `workspacePath` to `reload`.");
+            sb.AppendLine();
+            sb.AppendLine(
+                "File-scoped semantic tools (`find_symbol_references`, `get_call_graph`, `get_class_skeleton`, `get_diagnostics_for_file`, AST tools) "
+                + "auto-load the nearest workspace (config first, then walk-up from the file) — they work **without** `workspace-path`. "
+                + "`workspace-path`/`reload` are required for solution-wide tools (`find_usages`, `find_symbol_definition`, `find_implementations`, `get_test_list`).");
+            sb.AppendLine();
 
             var candidates = WorkspaceLoadGuidance.DiscoverSolutionCandidates();
             if (candidates.Count == 0)

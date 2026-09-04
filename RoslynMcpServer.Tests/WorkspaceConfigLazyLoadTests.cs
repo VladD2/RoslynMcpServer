@@ -1,3 +1,4 @@
+using Microsoft.CodeAnalysis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoslynMcpServer.Config;
@@ -175,6 +176,49 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
             Assert.NotNull(document);
             // The walk-up candidate (Deep.csproj) is loaded, not the broken config path.
             Assert.Equal(Path.GetFullPath(_fixture.DeepProjectPath), manager.GetLoadedWorkspacePath(), StringComparer.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await manager.ClearWorkspaceAsync();
+        }
+    }
+
+    /// <summary>
+    /// F9.2: a relative config <c>workspace-path</c> resolves via <c>Path.GetFullPath</c> against the MCP
+    /// process current directory (not the exe directory) — with cwd = fixture root, the lazy load opens
+    /// the fixture's <c>Config/Config.csproj</c>.
+    /// </summary>
+    [Fact]
+    public async Task Relative_workspace_path_resolves_against_process_cwd()
+    {
+        var config = _fixture.CreateConfig("Config/Config.csproj");
+        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
+        try
+        {
+            // Path.GetFullPath on the relative config path runs synchronously inside the first
+            // GetCurrentSolutionAfterDiskSyncAsync call (before the first real await); start the task
+            // inside the lock. The original cwd is captured AND restored inside the lock so the dirty
+            // window (cwd = fixture root) never leaks outside it for parallel tests to observe.
+            Task<Solution?> loadTask;
+            lock (TestEnvironmentLocks.Cwd)
+            {
+                var originalCwd = Environment.CurrentDirectory;
+                try
+                {
+                    Environment.CurrentDirectory = _fixture.Root;
+                    loadTask = manager.GetCurrentSolutionAfterDiskSyncAsync();
+                }
+                finally
+                {
+                    Environment.CurrentDirectory = originalCwd;
+                }
+            }
+
+            var solution = await loadTask;
+
+            Assert.NotNull(solution);
+            Assert.Contains(solution!.Projects, p => p.Name == "Config");
+            Assert.Equal(Path.GetFullPath(_fixture.ConfigProjectPath), manager.GetLoadedWorkspacePath(), StringComparer.OrdinalIgnoreCase);
         }
         finally
         {

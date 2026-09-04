@@ -84,6 +84,8 @@ Restart OpenCode or reload MCP servers after running the script.
 
 Workspace and search output are configured via a `RoslynMcp.jsonc` file (JSONC = JSON with comments). It is read from **two places at startup and merged**, exactly like the `TfsMcp`/`MCP` servers: the **exe directory** first, then the **current working directory** (cwd wins for conflicting keys). If no config file is found, the workspace falls back to `ROSLYN_MCP_WORKSPACE` (or cwd) solution discovery — semantic tools then guide you toward source candidates.
 
+Relative `workspace-path` resolves against the MCP process current directory (not the exe directory) — prefer absolute paths.
+
 Keys (flat kebab-case):
 
 | Key | Default | Description |
@@ -95,7 +97,7 @@ Keys (flat kebab-case):
 | `max-results` | `50` | Unified cap for `find_*`/`search_code` results; per-call argument overrides it. |
 | `preview` | `false` | Default for the `preview` argument of the `find_*` search tools (include source line text). |
 
-Example `RoslynMcp.jsonc` (place it next to `RoslynMcpServer.exe` for global defaults, or in your project root — cwd wins — for per-project overrides):
+Example `RoslynMcp.jsonc` — the repo ships [`RoslynMcp.jsonc.sample`](RoslynMcp.jsonc.sample) with all keys and comments; copy it to the exe directory for global defaults / to the project root for per-project overrides (cwd wins):
 
 ```jsonc
 {
@@ -526,7 +528,7 @@ Returns namespaces, types, properties, and method signatures (bodies omitted). F
 - `className: string` — top-level class name
 - `memberSource: string` — full member declaration: method (modifiers, signature, body), property, or field
 
-Parses the member declaration, inserts it at the correct position (grouped by member kind, region-aware) with Roslyn `DocumentEditor.AddMember`, formats the file. Only method / property / field are supported (no events, constructors, records, or nested types). Workspace is from the config (`workspace-path`), loaded lazily. Prefer over a host patch for new members.
+Parses the member declaration, inserts it after the last member of the class (inside that `#region`, when the last member is inside one) via Roslyn `DocumentEditor.AddMember`, formats the file. Only method / property / field are supported (no events, constructors, records, or nested types). Workspace is from the config (`workspace-path`), loaded lazily. Prefer over a host patch for new members.
 </details>
 
 <details>
@@ -1113,7 +1115,7 @@ cd D:\Devel\YourApp
 - `className: string` — top-level класс
 - `memberSource: string` — полное объявление члена: метод (модификаторы, сигнатура, тело), property или field
 
-Парсит объявление, вставляет в правильное место (группировка по виду члена, с учётом регионов) через Roslyn `DocumentEditor.AddMember`, форматирует. Поддерживаются только method / property / field (не event, constructor, record, вложенные типы). Workspace — из конфига (`workspace-path`), ленивая загрузка. Для новых членов — вместо ручного host-патча.
+Парсит объявление, вставляет после последнего члена класса (в тот `#region`, если последний член в нём) через Roslyn `DocumentEditor.AddMember`, форматирует. Поддерживаются только method / property / field (не event, constructor, record, вложенные типы). Workspace — из конфига (`workspace-path`), ленивая загрузка. Для новых членов — вместо ручного host-патча.
 </details>
 
 <details>
