@@ -748,7 +748,7 @@ When the number of matches exceeds the cap, the full result (same markdown forma
 
 **Parameters:** *(none)*
 
-Use after `dotnet publish` to verify the MCP host picked up the new binary (expect **40** tools).
+Use after `dotnet publish` to verify the MCP host picked up the new binary (expect **42** tools).
 </details>
 
 <details>
@@ -856,7 +856,7 @@ cd D:\Devel\YourApp
 
 ## История agent-tools по версиям
 
-См. английский раздел [Agent tools by version](#agent-tools-by-version) (v1.0.13–v1.2.0). Правила агента — [`AGENTS.md.sample`](AGENTS.md.sample).
+См. английский раздел [Agent tools by version](#agent-tools-by-version) (v1.0.13–v1.3.0). Правила агента — [`AGENTS.md.sample`](AGENTS.md.sample).
 
 ## Cursor: как заставить агента реально вызывать tools
 
@@ -1329,7 +1329,7 @@ cd D:\Devel\YourApp
 
 **Параметры:** *(нет)*
 
-После `dotnet publish` — проверка, что MCP подхватил новый бинарник (ожидай **40** tools).
+После `dotnet publish` — проверка, что MCP подхватил новый бинарник (ожидай **42** tools).
 </details>
 
 <details>
