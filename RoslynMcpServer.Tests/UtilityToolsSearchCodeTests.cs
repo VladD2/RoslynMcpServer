@@ -14,7 +14,6 @@ public sealed class UtilityToolsSearchCodeTests
     {
         var workspaceRoot = CreateTempRoot();
         var externalRoot = CreateTempRoot();
-        var originalCwd = Environment.CurrentDirectory;
 
         try
         {
@@ -25,12 +24,30 @@ public sealed class UtilityToolsSearchCodeTests
             Directory.CreateDirectory(Path.Combine(externalRoot, "Downloads"));
             File.WriteAllText(Path.Combine(externalRoot, "Downloads", "external.csv"), "next version outside workspace");
 
-            Environment.CurrentDirectory = externalRoot;
+            // Start the task inside the lock: SearchCode is fully synchronous (Task.FromResult), so its
+            // whole body — including the cwd fallback read in ResolveSearchRootDirectory — runs here.
+            // The original cwd is captured AND restored inside the lock: a dirty (cwd = externalRoot)
+            // window outside the lock lets a parallel test capture externalRoot as its "original" cwd,
+            // pin the process cwd on it, and block the Directory.Delete below.
+            Task<string> searchTask;
+            lock (TestEnvironmentLocks.Cwd)
+            {
+                var originalCwd = Environment.CurrentDirectory;
+                try
+                {
+                    Environment.CurrentDirectory = externalRoot;
 
-            var manager = CreateManagerWithLoadedPath(Path.Combine(workspaceRoot, "App.sln"));
-            var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
+                    var manager = CreateManagerWithLoadedPath(Path.Combine(workspaceRoot, "App.sln"));
+                    var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
+                    searchTask = tool.SearchCode("next version");
+                }
+                finally
+                {
+                    Environment.CurrentDirectory = originalCwd;
+                }
+            }
 
-            var result = await tool.SearchCode("next version");
+            var result = await searchTask;
 
             Assert.Contains($"in `{workspaceRoot}`", result, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain($"in `{externalRoot}`", result, StringComparison.OrdinalIgnoreCase);
@@ -39,7 +56,6 @@ public sealed class UtilityToolsSearchCodeTests
         }
         finally
         {
-            Environment.CurrentDirectory = originalCwd;
             if (Directory.Exists(workspaceRoot))
             {
                 Directory.Delete(workspaceRoot, recursive: true);

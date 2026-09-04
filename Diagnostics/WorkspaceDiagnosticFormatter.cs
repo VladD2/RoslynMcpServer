@@ -100,8 +100,8 @@ public static class WorkspaceDiagnosticFormatter
         || message.Contains("does not contain \"Compile\" target", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Inner MSBuild text that must still fail <c>load_workspace</c> even inside the
-    /// <c>Msbuild failed when processing the file</c> wrapper.
+    /// Inner MSBuild text that must still fail <c>reload</c> / lazy config load / <c>load_workspace</c>
+    /// even inside the <c>Msbuild failed when processing the file</c> wrapper.
     /// </summary>
     public static bool IsHardMsBuildLoadFailure(string message) =>
         IsMissingTargetFrameworkEvaluation(message)
@@ -124,7 +124,7 @@ public static class WorkspaceDiagnosticFormatter
     }
 
     /// <summary>
-    /// True when a formatted diagnostic should fail <c>load_workspace</c>.
+    /// True when a formatted diagnostic should fail <c>reload</c> / lazy config load / <c>load_workspace</c>.
     /// Does not treat the word "failed" inside the MSBuildWorkspace wrapper
     /// (<c>Msbuild failed when processing the file</c>) as fatal by itself.
     /// Wrapped messages without an explicit error code or known-hard inner text are warnings.

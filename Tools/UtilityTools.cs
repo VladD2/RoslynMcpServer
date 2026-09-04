@@ -506,7 +506,9 @@ public sealed class UtilityTools
             {
                 return ToolTelemetry.TraceAndReturn(
                     nameof(RenameSymbol),
-                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage("Error: No workspace loaded."));
+                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
+                        "Error: No workspace loaded.",
+                        _solutionManager.ConfiguredWorkspacePath));
             }
 
             var normalizedScope = scope.Trim().ToLowerInvariant();
@@ -729,7 +731,9 @@ public sealed class UtilityTools
             {
                 return ToolTelemetry.TraceAndReturn(
                     nameof(ListProjects),
-                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage("Error: No workspace loaded."));
+                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
+                        "Error: No workspace loaded.",
+                        _solutionManager.ConfiguredWorkspacePath));
             }
 
             var sb = new StringBuilder();
@@ -794,7 +798,9 @@ public sealed class UtilityTools
             {
                 return ToolTelemetry.TraceAndReturn(
                     nameof(GetProjectGraph),
-                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage("Error: No workspace loaded."));
+                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
+                        "Error: No workspace loaded.",
+                        _solutionManager.ConfiguredWorkspacePath));
             }
 
             var sb = new StringBuilder();

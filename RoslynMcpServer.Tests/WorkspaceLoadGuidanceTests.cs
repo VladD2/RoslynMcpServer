@@ -1,4 +1,9 @@
+using System.Reflection;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+using RoslynMcpServer.Config;
 using RoslynMcpServer.Services;
+using RoslynMcpServer.Tools;
 using Xunit;
 
 namespace RoslynMcpServer.Tests;
@@ -6,21 +11,38 @@ namespace RoslynMcpServer.Tests;
 public sealed class WorkspaceLoadGuidanceTests
 {
     [Fact]
-    public void FormatNoWorkspaceLoadedMessage_includes_candidates_under_cwd()
+    public void FormatNoWorkspaceLoadedMessage_no_config_suggests_config_or_load_workspace()
     {
         var root = CreateTempRoot();
-        var originalCwd = Environment.CurrentDirectory;
         var originalEnv = Environment.GetEnvironmentVariable("ROSLYN_MCP_WORKSPACE");
 
         try
         {
-            Environment.SetEnvironmentVariable("ROSLYN_MCP_WORKSPACE", null);
             File.WriteAllText(Path.Combine(root, "App.sln"), string.Empty);
             File.WriteAllText(Path.Combine(root, "App.slnx"), "<Solution />");
-            Environment.CurrentDirectory = root;
 
-            var message = WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage("Error: No active workspace.");
+            // Branch (a): no config — recommend the config (lazy load) or an explicit load_workspace.
+            // The original cwd is captured AND restored inside the lock so the dirty window
+            // (cwd = root) never leaks outside it for parallel tests to observe.
+            string message;
+            lock (TestEnvironmentLocks.Cwd)
+            {
+                var originalCwd = Environment.CurrentDirectory;
+                try
+                {
+                    Environment.SetEnvironmentVariable("ROSLYN_MCP_WORKSPACE", null);
+                    Environment.CurrentDirectory = root;
+                    message = WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
+                        "Error: No active workspace.",
+                        configuredPath: null);
+                }
+                finally
+                {
+                    Environment.CurrentDirectory = originalCwd;
+                }
+            }
 
+            Assert.Contains("workspace-path", message, StringComparison.Ordinal);
             Assert.Contains("load_workspace", message, StringComparison.Ordinal);
             Assert.Contains("App.sln", message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("App.slnx", message, StringComparison.OrdinalIgnoreCase);
@@ -30,8 +52,136 @@ public sealed class WorkspaceLoadGuidanceTests
         }
         finally
         {
-            Environment.CurrentDirectory = originalCwd;
             Environment.SetEnvironmentVariable("ROSLYN_MCP_WORKSPACE", originalEnv);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void FormatNoWorkspaceLoadedMessage_configured_path_exists_points_to_reload_not_load_workspace_first()
+    {
+        var root = CreateTempRoot();
+        var configuredPath = Path.Combine(root, "App.sln");
+        File.WriteAllText(configuredPath, string.Empty);
+
+        try
+        {
+            // Branch (b): config is set and the file exists — primary recommendation is the config/reload,
+            // load_workspace is only an option to open a different solution.
+            var message = WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
+                "Error: No active workspace.",
+                configuredPath: configuredPath);
+
+            Assert.Contains(configuredPath, message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("reload", message, StringComparison.Ordinal);
+            Assert.Contains("lazy load failed", message, StringComparison.Ordinal);
+            // No imperative "Call `load_workspace` …" as the primary instruction.
+            Assert.DoesNotContain("Call `load_workspace`", message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void FormatNoWorkspaceLoadedMessage_configured_path_missing_reports_not_found()
+    {
+        var root = CreateTempRoot();
+        var configuredPath = Path.Combine(root, "Missing.sln");
+
+        try
+        {
+            // Branch (c): config is set but the file does not exist (F3: broken workspace-path).
+            var message = WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
+                "Error: No active workspace.",
+                configuredPath: configuredPath);
+
+            Assert.Contains(configuredPath, message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("not found", message, StringComparison.Ordinal);
+            Assert.Contains("workspace-path", message, StringComparison.Ordinal);
+            Assert.Contains("reload", message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Agent_facing_workspace_strings_do_not_direct_Call_load_workspace()
+    {
+        // Sweep (regression guard against the guidance cascade): no agent-facing string directs
+        // "Call `load_workspace` first" / "Call `load_workspace` with" as the primary action.
+        var root = CreateTempRoot();
+        var existingConfiguredPath = Path.Combine(root, "App.sln");
+        File.WriteAllText(existingConfiguredPath, string.Empty);
+        var missingConfiguredPath = Path.Combine(root, "Missing.sln");
+
+        var config = new WorkspaceConfig(new ConfigurationBuilder().Build());
+        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
+        typeof(SolutionManager)
+            .GetField("_projectGraphStale", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(manager, true);
+
+        var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
+        var resetResponse = await tools.ResetWorkspace();
+
+        var strings = new[]
+        {
+            WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(null, configuredPath: null),
+            WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(null, configuredPath: existingConfiguredPath),
+            WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(null, configuredPath: missingConfiguredPath),
+            WorkspaceLoadGuidance.FormatClientCancelledWorkspaceLoadMessage(@"C:\repo\Tests.sln"),
+            WorkspaceLoadGuidance.FormatMissingTargetFrameworkWorkspaceLoadMessage(
+                @"C:\repo\App.sln",
+                new[]
+                {
+                    "Failure: Msbuild failed when processing the file 'C:\\repo\\Foo.csproj' with message: "
+                    + "The \"ResolvePackageAssets\" task was not given a value for the required parameter \"TargetFramework\".",
+                },
+                configuration: null,
+                platform: null),
+            WorkspaceLoadGuidance.FormatMissingCompileTargetWorkspaceLoadMessage(
+                @"C:\repo\App.sln",
+                new[]
+                {
+                    "Failure: Msbuild failed when processing the file 'C:\\repo\\Foo.csproj' with message: "
+                    + "Project does not contain 'Compile' target.",
+                },
+                configuration: null,
+                platform: null,
+                targetFramework: null),
+            WorkspaceLoadGuidance.FormatRoslynMsBuildBuildHostFailureMessage(@"C:\app.sln"),
+            WorkspaceLoadGuidance.FormatEmptyTestListMessage(@"C:\repo\Common\Common.csproj", projectCount: 1),
+            WorkspaceLoadGuidance.FormatNoMatchingTestsAgentHint(
+                loadedRoslynWorkspacePath: null,
+                filterDescription: "Name suffix `.FooTests.Bar`",
+                testTargetPath: @"C:\repo\Tests.sln"),
+            manager.GetProjectGraphStaleHint()!,
+            AssemblyReferenceResolver.Resolve(solution: null, assemblyName: "SomeAssembly", assemblyPath: null).ErrorMessage!,
+            resetResponse,
+        };
+
+        try
+        {
+            foreach (var text in strings)
+            {
+                Assert.DoesNotContain("Call `load_workspace` first", text, StringComparison.Ordinal);
+                Assert.DoesNotContain("Call `load_workspace` with", text, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
             if (Directory.Exists(root))
             {
                 Directory.Delete(root, recursive: true);

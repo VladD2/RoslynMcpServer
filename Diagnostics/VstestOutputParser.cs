@@ -224,7 +224,8 @@ public static class VstestOutputParser
             sb.AppendLine();
             sb.AppendLine(
                 "**Agent signal:** zero tests matched the filter (build may still show `0 Error(s)`). "
-                + "Do not assume the test is missing from the repo — verify Roslyn workspace scope with `get_test_list` after `load_workspace` on the test `.sln`/`.slnx`.");
+                + "Do not assume the test is missing from the repo — verify Roslyn workspace scope with `get_test_list` after loading the test `.sln`/`.slnx` "
+                + "(`workspace-path` in `RoslynMcp.jsonc`, or `reload`/`load_workspace`).");
             if (!string.IsNullOrWhiteSpace(filterDescription))
             {
                 sb.AppendLine($"**Match mode:** {filterDescription}");

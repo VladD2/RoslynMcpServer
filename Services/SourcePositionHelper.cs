@@ -73,6 +73,25 @@ public static class SourcePositionHelper
             return (0, $"`line` {line} is out of range (file has {text.Lines.Count} lines).");
         }
 
-        return (text.Lines[line - 1].Start + (column - 1), null);
+        var lineText = text.Lines[line - 1];
+        var end = lineText.End;
+        // TextLine.End includes the line-break sequence; exclude it so the visible line length is reported.
+        if (end > lineText.Start && text[end - 1] == '\n')
+        {
+            end--;
+        }
+
+        if (end > lineText.Start && text[end - 1] == '\r')
+        {
+            end--;
+        }
+
+        var lineLength = end - lineText.Start;
+        if (column - 1 > lineLength)
+        {
+            return (0, $"`column` {column} is out of range (line {line} has {lineLength} characters).");
+        }
+
+        return (lineText.Start + (column - 1), null);
     }
 }

@@ -46,19 +46,30 @@ public sealed class SolutionManagerPathResolutionTests
     public void ResolvePathAgainstWorkspace_falls_back_to_current_directory_when_workspace_missing()
     {
         var manager = CreateManager();
-        var original = Environment.CurrentDirectory;
         var temp = CreateTempRoot();
         Directory.CreateDirectory(temp);
 
         try
         {
-            Environment.CurrentDirectory = temp;
-            var resolved = manager.ResolvePathAgainstWorkspace("src/App.cs");
+            string resolved;
+            lock (TestEnvironmentLocks.Cwd)
+            {
+                var original = Environment.CurrentDirectory;
+                try
+                {
+                    Environment.CurrentDirectory = temp;
+                    resolved = manager.ResolvePathAgainstWorkspace("src/App.cs");
+                }
+                finally
+                {
+                    Environment.CurrentDirectory = original;
+                }
+            }
+
             Assert.Equal(Path.GetFullPath(Path.Combine(temp, "src", "App.cs")), resolved);
         }
         finally
         {
-            Environment.CurrentDirectory = original;
             if (Directory.Exists(temp))
             {
                 Directory.Delete(temp, recursive: true);

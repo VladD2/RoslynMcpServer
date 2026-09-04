@@ -68,11 +68,12 @@ public sealed class FindUsagesGroupingTests
 
         var result = await search.Tool.FindUsages("FastGlobGrep");
 
-        // Summary table with one row per declaration FQN.
+        // Summary table with one row per declaration FQN (the First column disambiguates identical FQNs,
+        // e.g. method overloads in the same type).
         Assert.Contains("2 declaration(s) match this name:", result, StringComparison.Ordinal);
-        Assert.Contains("| FQN | References |", result, StringComparison.Ordinal);
-        Assert.Contains("| global::Ns1.FastGlobGrep | 2 |", result, StringComparison.Ordinal);
-        Assert.Contains("| global::Ns2.FastGlobGrep | 0 |", result, StringComparison.Ordinal);
+        Assert.Contains("| FQN | References | First |", result, StringComparison.Ordinal);
+        Assert.Contains("| global::Ns1.FastGlobGrep | 2 | 12:25 |", result, StringComparison.Ordinal);
+        Assert.Contains("| global::Ns2.FastGlobGrep | 0 | — |", result, StringComparison.Ordinal);
 
         // Per-FQN sections, references grouped under the right FQN.
         const string nS1Header = "### `global::Ns1.FastGlobGrep`";
@@ -133,10 +134,11 @@ public sealed class FindUsagesGroupingTests
 
         var result = await search.Tool.FindUsages("FastGlobGrep");
 
-        // Table rows include the declaring type (owner), not the bare member name.
+        // Table rows include the declaring type (owner), not the bare member name; the First column
+        // carries the first reference position.
         Assert.Contains("2 declaration(s) match this name:", result, StringComparison.Ordinal);
-        Assert.Contains("| global::Mcp.Tools.CodeBaseInfo.FastGlobGrep | 2 |", result, StringComparison.Ordinal);
-        Assert.Contains("| global::Mcp.Tools.CppLspTool.FastGlobGrep | 1 |", result, StringComparison.Ordinal);
+        Assert.Contains("| global::Mcp.Tools.CodeBaseInfo.FastGlobGrep | 2 | 19:24 |", result, StringComparison.Ordinal);
+        Assert.Contains("| global::Mcp.Tools.CppLspTool.FastGlobGrep | 1 | 21:24 |", result, StringComparison.Ordinal);
         Assert.DoesNotContain("| FastGlobGrep |", result, StringComparison.Ordinal);
 
         // Sections are distinct and carry their own references.

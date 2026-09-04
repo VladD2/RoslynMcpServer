@@ -5,7 +5,8 @@ namespace RoslynMcpServer.Services;
 
 /// <summary>
 /// Builds consistent "no workspace loaded" guidance with candidate .sln/.slnx paths.
-/// Does not auto-load — agents must call <c>load_workspace</c>.
+/// Does not auto-load: the workspace is loaded lazily from the <c>RoslynMcp.jsonc</c> config
+/// (<c>workspace-path</c>); <c>reload</c>/<c>load_workspace</c>/<c>reset_workspace</c> force a (re)load / clear.
 /// </summary>
 public static class WorkspaceLoadGuidance
 {
@@ -27,19 +28,59 @@ public static class WorkspaceLoadGuidance
     /// <summary>BFS depth under each search root.</summary>
     public const int DefaultMaxDepth = 5;
 
-    public static string FormatNoWorkspaceLoadedMessage(string? leadingSentence = null)
+    /// <summary>
+    /// Builds the "no workspace loaded" guidance. <paramref name="configuredPath"/> is the config
+    /// <c>workspace-path</c> (from <see cref="SolutionManager.ConfiguredWorkspacePath"/>): when it is set the
+    /// primary recommendation is the config/<c>reload</c> path and <c>load_workspace</c> is only an option to
+    /// open a different solution; when it is absent the agent is told to set the config (lazy load) or call
+    /// <c>load_workspace</c> with an explicit path (no server restart). Never instructs "call
+    /// <c>load_workspace</c> first" as the primary action.
+    /// </summary>
+    public static string FormatNoWorkspaceLoadedMessage(string? leadingSentence = null, string? configuredPath = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine(leadingSentence ?? "Error: No workspace loaded.");
-        sb.AppendLine(
-            "Call `load_workspace` with the absolute path to your `.sln`, `.slnx`, or entry `.csproj`.");
+
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            sb.AppendLine(
+                "Set `workspace-path` in `RoslynMcp.jsonc` (exe directory or current directory) — the workspace will load lazily on the next semantic call. "
+                + "Or call `load_workspace` with an absolute `.sln`/`.slnx`/`.csproj` path (no server restart needed).");
+        }
+        else if (TryFileExists(configuredPath))
+        {
+            sb.AppendLine(
+                $"The configured workspace `{configuredPath}` is not loaded (lazy load failed — see server log). "
+                + "Retry with `reload`; to open a different solution pass `workspacePath` to `load_workspace`.");
+        }
+        else
+        {
+            sb.AppendLine(
+                $"The configured workspace `{configuredPath}` was **not found** — check `workspace-path` in `RoslynMcp.jsonc` "
+                + "(relative paths resolve against the MCP process current directory). "
+                + "Retry with `reload`; to open a different solution pass `workspacePath` to `load_workspace`.");
+        }
+
         AppendSolutionCandidates(sb);
         return sb.ToString().TrimEnd();
     }
 
+    private static bool TryFileExists(string path)
+    {
+        try
+        {
+            return File.Exists(Path.GetFullPath(path));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>
-    /// Host/MCP client aborted <c>load_workspace</c> (not an MSBuild/project failure).
-    /// Common with OpenCode default ~60s tool timeout on large solutions.
+    /// Host/MCP client aborted the in-flight workspace load (lazy config load, <c>reload</c>, or
+    /// <c>load_workspace</c>) — not an MSBuild/project failure. Common with OpenCode default ~60s tool
+    /// timeout on large solutions.
     /// </summary>
     public static string FormatClientCancelledWorkspaceLoadMessage(string workspacePath)
     {
@@ -47,11 +88,11 @@ public static class WorkspaceLoadGuidance
         sb.AppendLine("## Workspace Load Cancelled (client abort)");
         sb.AppendLine();
         sb.AppendLine(
-            "**This is not an MSBuild / NuGet failure.** The MCP host cancelled the in-flight "
-            + "`load_workspace` call (AbortError / OperationCanceledException) before Roslyn finished opening the solution.");
+            "**This is not an MSBuild / NuGet failure.** The MCP host cancelled the in-flight workspace load "
+            + "(lazy config load, `reload`, or `load_workspace`; AbortError / OperationCanceledException) before Roslyn finished opening the solution.");
         sb.AppendLine();
         sb.AppendLine($"- **Path:** `{workspacePath}`");
-        sb.AppendLine("- **What to do:** raise the host MCP tool timeout (OpenCode: `\"timeout\": 600000` ms in mcp config), then call `load_workspace` again and wait until it completes.");
+        sb.AppendLine("- **What to do:** raise the host MCP tool timeout (OpenCode: `\"timeout\": 600000` ms in mcp config), then retry (repeat the semantic call, or `reload`/`load_workspace`) and wait until the load completes.");
         sb.AppendLine(
             "- **Do not** treat NuGet audit / prune / TFM-compat lines (`NU190*`, GHSA, `NU1701`, `will not be pruned`) logged during load as the root cause of this cancel.");
         sb.AppendLine(
@@ -84,8 +125,9 @@ public static class WorkspaceLoadGuidance
             $"- **MSBuild Platform:** {(string.IsNullOrWhiteSpace(platform) ? "(SDK/workspace default — typically AnyCPU)" : $"`{platform}`")}");
         sb.AppendLine();
         sb.AppendLine(
-            "**What to do:** retry `load_workspace` with `configuration` and `platform` matching the solution config Visual Studio uses "
-            + "(multi-config / Bazel IDE sln often is not Debug|AnyCPU). `run_dotnet_build` / `run_dotnet_test` then inherit those values unless you override them.");
+            "**What to do:** set `configuration` and `platform` in `RoslynMcp.jsonc` (or pass them to `reload` / `load_workspace`) "
+            + "matching the solution config Visual Studio uses (multi-config / Bazel IDE sln often is not Debug|AnyCPU). "
+            + "`run_dotnet_build` / `run_dotnet_test` then inherit those values unless you override them.");
 
         var configs = SolutionConfigurationCatalog.ListConfigurationPlatforms(workspacePath);
         if (configs.Count > 0)
@@ -176,8 +218,8 @@ public static class WorkspaceLoadGuidance
         if (string.IsNullOrWhiteSpace(targetFramework))
         {
             sb.AppendLine(
-                "**What to do:** retry `load_workspace` with `targetFramework` set to one inner TFM "
-                + "(same idea as `dotnet build -f net10.0`). This is **not** auto-selected. "
+                "**What to do:** set `target-framework` in `RoslynMcp.jsonc` (or pass `targetFramework` to `reload` / `load_workspace`) "
+                + "to one inner TFM (same idea as `dotnet build -f net10.0`). This is **not** auto-selected. "
                 + "Analyzer-only projects that do not implement that TFM may still fail; application/library projects usually load.");
         }
         else
@@ -318,8 +360,8 @@ public static class WorkspaceLoadGuidance
         sb.AppendLine(
             "- Use RoslynMcpServer **1.0.35+** (`Microsoft.CodeAnalysis.Workspaces.MSBuild` 5.9+ isolates MSBuild in an AppDomain).");
         sb.AppendLine(
-            "- If this binary is already 1.0.35+ and the error persists: `load_workspace` on a **single SDK-style `.csproj`** "
-            + "instead of a mixed native/legacy `.sln` (netcore BuildHost).");
+            "- If this binary is already 1.0.35+ and the error persists: `reload` (or `load_workspace`) on a **single SDK-style `.csproj`** "
+            + "(or point `workspace-path` at it) instead of a mixed native/legacy `.sln` (netcore BuildHost).");
         sb.AppendLine(
             "- Semantic `find_symbol_*` needs a loaded workspace. `search_code` / host Grep remain usable as text fallback.");
 
@@ -327,9 +369,16 @@ public static class WorkspaceLoadGuidance
         return sb.ToString().TrimEnd();
     }
 
-    /// <summary>Prefers the dedicated BuildHost report when the exception matches; otherwise <paramref name="fallback"/>.</summary>
+    /// <summary>
+    /// Prefers the dedicated host-abort / BuildHost reports when the exception matches; otherwise <paramref name="fallback"/>.
+    /// </summary>
     public static string FormatCaughtException(Exception ex, string fallback, string? workspacePath = null)
     {
+        if (ex is WorkspaceLoadCancelledException cancelled)
+        {
+            return cancelled.Message;
+        }
+
         if (ex is RoslynMsBuildBuildHostException hostEx)
         {
             return hostEx.Message;
@@ -379,7 +428,7 @@ public static class WorkspaceLoadGuidance
 
         sb.AppendLine($"- **Projects in workspace:** {projectCount}");
         sb.AppendLine(
-            "- **Next step:** call `load_workspace` with the absolute path to the `.sln`/`.slnx` that contains the test projects, then retry `get_test_list`.");
+            "- **Next step:** point `workspace-path` at the `.sln`/`.slnx` that contains the test projects, or call `reload`/`load_workspace` with it, then retry `get_test_list`.");
         AppendSolutionCandidates(sb);
         return sb.ToString().TrimEnd();
     }
@@ -412,14 +461,14 @@ public static class WorkspaceLoadGuidance
                 sb.AppendLine(
                     "- **Mismatch:** Roslyn workspace path ≠ `workspacePath` passed to the test tool. "
                     + "FQN resolve uses the Roslyn workspace; `dotnet test` uses `workspacePath`. "
-                    + "Call `load_workspace` on the same `.sln`/`.slnx` you pass to `run_specific_test`.");
+                    + "Point `workspace-path` (or `reload`/`load_workspace`) at the same `.sln`/`.slnx` you pass to `run_specific_test`.");
             }
         }
         else
         {
             sb.AppendLine(
                 "- **Roslyn workspace loaded:** none — filter fell back to a name suffix (weaker). "
-                + "Call `load_workspace` on the test `.sln` first so Roslyn can resolve the exact FQN.");
+                + "Load the test `.sln` via `workspace-path` (or `reload`/`load_workspace`) first so Roslyn can resolve the exact FQN.");
         }
 
         if (!string.IsNullOrWhiteSpace(filterDescription)
@@ -437,7 +486,7 @@ public static class WorkspaceLoadGuidance
         }
 
         sb.AppendLine(
-            "- **Next:** `load_workspace` on the test solution → `get_test_list` → retry `run_specific_test` with the listed `className`/`methodName`.");
+            "- **Next:** `reload`/`load_workspace` (or `workspace-path`) on the test solution → `get_test_list` → retry `run_specific_test` with the listed `className`/`methodName`.");
         return sb.ToString().TrimEnd();
     }
 
@@ -594,10 +643,25 @@ public static class WorkspaceLoadGuidance
 /// <summary>
 /// Thrown when Roslyn's out-of-proc BuildHost crashes on VS 2026 / MSBuild 18
 /// (<c>XMakeElements</c> type initializer). Not an SDK pin / <c>MCP_MSBUILD_SDK_MISMATCH</c>.
+/// Carries a preformatted agent-facing report in <see cref="Exception.Message"/>.
 /// </summary>
 public sealed class RoslynMsBuildBuildHostException : InvalidOperationException
 {
     public RoslynMsBuildBuildHostException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
+/// Thrown when the MCP host cancels an in-flight workspace load (lazy config load, <c>reload</c>, or
+/// <c>load_workspace</c>) — a client abort, not an MSBuild/project failure. Carries a preformatted
+/// agent-facing report in <see cref="Exception.Message"/> (same pattern as
+/// <see cref="RoslynMsBuildBuildHostException"/>).
+/// </summary>
+public sealed class WorkspaceLoadCancelledException : InvalidOperationException
+{
+    public WorkspaceLoadCancelledException(string message, Exception innerException)
         : base(message, innerException)
     {
     }

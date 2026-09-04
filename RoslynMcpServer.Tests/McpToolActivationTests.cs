@@ -66,9 +66,30 @@ public sealed class McpToolActivationTests
             name => name == "list_outdated_packages");
     }
 
+    /// <summary>
+    /// v1.3.0: the registry holds exactly 42 tools (40 from v1.2.0 + the restored <c>load_workspace</c> /
+    /// <c>reset_workspace</c>), with no duplicate tool names.
+    /// </summary>
+    [Fact]
+    public void Registry_contains_exactly_42_distinct_tool_names()
+    {
+        var names = McpToolRegistry.ToolTypes
+            .SelectMany(t => GetMcpToolMethodNames(t))
+            .ToList();
+
+        Assert.Equal(42, names.Count);
+        Assert.Equal(names.Count, names.Distinct(StringComparer.Ordinal).Count());
+    }
+
     private static IHost BuildHost()
     {
-        var builder = Host.CreateApplicationBuilder();
+        // Explicit content root: the default reads Environment.CurrentDirectory, which other test
+        // classes mutate (see TestEnvironmentLocks.Cwd) — a deleted temp cwd throws
+        // DirectoryNotFoundException in PhysicalFileProvider.
+        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+        {
+            ContentRootPath = AppContext.BaseDirectory,
+        });
         builder.Services.AddRoslynMcpServerTools();
         return builder.Build();
     }

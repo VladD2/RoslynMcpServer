@@ -155,7 +155,9 @@ public sealed class TestTools
             {
                 return ToolTelemetry.TraceAndReturn(
                     toolName,
-                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage("No workspace loaded."));
+                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
+                        "No workspace loaded.",
+                        _solutionManager.ConfiguredWorkspacePath));
             }
 
             var json = await TestDiscoveryHelper.ListTestsJsonAsync(solution, maxResults, cancellationToken)

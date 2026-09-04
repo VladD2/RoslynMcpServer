@@ -113,9 +113,19 @@ Example `RoslynMcp.jsonc` (place it next to `RoslynMcpServer.exe` for global def
 
 Use `reload` after changing these values (or to re-load a different `workspace-path` when the solution changes).
 
+If the config is **not** set, the agent can still open a workspace explicitly with **`load_workspace`** (an absolute `.sln`/`.slnx`/`.csproj` path, no server restart needed) — the configured workspace otherwise loads lazily on the first semantic call. **`reset_workspace`** disposes the in-process `MSBuildWorkspace` and drops the cached solution (frees memory / clean state, e.g. before switching solutions or parameters via `load_workspace`).
+
 ## Agent tools by version
 
 Tracks MCP tools relevant to [`AGENTS.md.sample`](AGENTS.md.sample) (copy into app repos as `AGENTS.md`). Current server version: see `RoslynMcpServer.csproj`.
+
+### v1.3.0
+
+- **`load_workspace` / `reset_workspace` restored** — alongside config + lazy load + `reload` (42 tools): `load_workspace` opens a `.sln`/`.slnx`/`.csproj` explicitly **without restarting the server** (no config set, or a different solution/parameters); `reset_workspace` disposes the workspace and drops the cache (frees memory / clean state, before switching solutions/parameters).
+- **Conditional "no workspace" guidance** — when `workspace-path` is set in `RoslynMcp.jsonc`, the agent is **not** directed to `load_workspace` (primary recommendation: config / `reload`); `load_workspace` is only an option to open a different path.
+- **Host abort during lazy load** — a host timeout/cancel mid lazy load now returns **Workspace Load Cancelled (client abort)** (with the `timeout ≥ 600000` hint) instead of the misleading "No active workspace".
+- **Broken `workspace-path`** — a configured path that does not exist on disk is a warning + fallback as if the config were absent: file-scoped tools fall back to walk-up, solution-wide tools report "configured workspace … not found".
+- **FQN overloads documented** — FQN does not distinguish method overloads (all same-name overloads in the same type are reported); the `find_usages` summary table now carries a `First` (line:col) column. `get_call_graph` `maxNodes` is the cap on the **total** node count; `find_implementations` error branches carry the disk-sync note; `ToOffset` validates `column` against the line length.
 
 ### v1.2.0
 
@@ -127,7 +137,7 @@ Tracks MCP tools relevant to [`AGENTS.md.sample`](AGENTS.md.sample) (copy into a
 - **`preview`** — unified parameter on `find_*` search tools (default `false`; overridable by config `preview`).
 - **cap 50 → temp file** — results exceeding the cap (config `max-results`, default 50) are written in full to `%Temp%\roslyn-mcp\<yyyyMMdd-HHmmss-<short-guid>>\result.md`; the response returns the count + path instead of silently truncating.
 
-> **Migration for existing `AGENTS.md` with `load_workspace`:** replace `load_workspace <path>` / `reset_workspace` with the `reload` tool (or by setting `workspace-path` in `RoslynMcp.jsonc`). The workspace loads lazily from the config — remove any startup `load_workspace` calls; the first semantic call after server start may take minutes (host timeout ≥ 600000 ms). Drop references to the removed file/shell tools and use the host `read`/`write`/`edit`/`bash`/`git` tools instead.
+> **Migration for existing `AGENTS.md` with `load_workspace`:** *(superseded by v1.3.0 — `load_workspace` / `reset_workspace` are back; see above.)* replace `load_workspace <path>` / `reset_workspace` with the `reload` tool (or by setting `workspace-path` in `RoslynMcp.jsonc`). The workspace loads lazily from the config — remove any startup `load_workspace` calls; the first semantic call after server start may take minutes (host timeout ≥ 600000 ms). Drop references to the removed file/shell tools and use the host `read`/`write`/`edit`/`bash`/`git` tools instead.
 
 ### v1.1.0
 
@@ -295,7 +305,7 @@ Policy summary (full text in the sample):
 
 When a tool accepts `filePath`, relative values are resolved against the loaded workspace root; if no workspace is loaded, the fallback is `Environment.CurrentDirectory`. The workspace is taken from the `RoslynMcp.jsonc` config (`workspace-path`) and loaded **lazily** — the first semantic call after server start can take minutes (set the host MCP `timeout` to ≥ 600000 ms).
 
-There are **40** registered tools (see list below) and **1** MCP prompt (`RefactoringAssistantPrompt`).
+There are **42** registered tools (see list below) and **1** MCP prompt (`RefactoringAssistantPrompt`).
 
 ### Workspace
 
@@ -311,6 +321,24 @@ There are **40** registered tools (see list below) and **1** MCP prompt (`Refact
 **Behavior:** Path and MSBuild properties default to `RoslynMcp.jsonc`; arguments override the config. Call after `dotnet build` (generated `obj`), `.csproj`/`.sln`/`Directory.Build.props` edits, or project switching. Ordinary `.cs` saves do not need a reload (disk-sync). The first load of a large solution can take minutes — raise the host MCP timeout.
 </details>
 
+<details>
+<summary><code>load_workspace</code> — Explicitly loads a <code>.sln</code>/<code>.slnx</code>/<code>.csproj</code> without restarting the MCP server.</summary>
+
+**Parameters:**
+- `workspacePath: string` — **required** absolute path to a `.sln`, `.slnx`, or `.csproj` file (not a directory). The config `workspace-path` is **not** substituted here (that is the role of `reload`).
+- `configuration: string?` / `platform: string?` / `targetFramework: string?` — optional MSBuild global properties (omit for the SDK/solution default).
+
+**Behavior:** Use when `workspace-path` is not set in `RoslynMcp.jsonc` (the configured workspace otherwise loads lazily and this tool is not needed), to load a different solution than the config, or to override `configuration`/`platform`/`target-framework`. Same path + properties returns the cache unless the project graph is stale; a different path or properties replaces the currently loaded workspace. Large solutions can take minutes — host timeout ≥ 600000. After a successful load, saved `.cs` sync from disk automatically; a changed `.csproj`/`.sln` needs `reload` (or `reset_workspace` + `load_workspace`).
+</details>
+
+<details>
+<summary><code>reset_workspace</code> — Disposes the in-process MSBuildWorkspace and drops the cached solution.</summary>
+
+**Parameters:** none.
+
+**Behavior:** Frees memory / gives a clean state. Use while developing this server, or before switching solutions/parameters via `load_workspace`. Ordinary `.cs` edits and generated `obj` after build do **not** require reset — use `reload`. Does not restart the MCP process — use `stop_mcp_server` if the server binary itself was rebuilt.
+</details>
+
 ### Semantics / Navigation
 
 <details>
@@ -320,7 +348,7 @@ There are **40** registered tools (see list below) and **1** MCP prompt (`Refact
 - `symbolName: string` — class, interface, struct, enum, or member identifier, or an exact FQN.
 - `maxResults: int?`, `preview: bool?`
 
-**Behavior:** A `symbolName` containing `.` is treated as an exact FQN (no fallback to the simple name); on no match the error lists the candidate FQNs. Returns the symbol display string, **fully-qualified name (FQN)**, and **1-based file:line:col**. Do **not** answer “where is X **declared**?” with plain-text search or shell `grep`/`findstr`/`Select-String`. For arbitrary text search use your environment’s built-in **`grep`** tool.
+**Behavior:** A `symbolName` containing `.` is treated as an exact FQN (no fallback to the simple name); on no match the error lists the candidate FQNs. Returns the symbol display string, **fully-qualified name (FQN)**, and **1-based file:line:col**. FQN does not distinguish method overloads (all overloads with the same name in the same type are reported); to select one overload use 1-based `line`/`column` in `find_symbol_references` or `rename_symbol`. Do **not** answer “where is X **declared**?” with plain-text search or shell `grep`/`findstr`/`Select-String`. For arbitrary text search use your environment’s built-in **`grep`** tool.
 </details>
 
 <details>
@@ -330,7 +358,7 @@ There are **40** registered tools (see list below) and **1** MCP prompt (`Refact
 - `symbolName: string` — declared name of the type or member, or an exact FQN.
 - `maxResults: int?`, `preview: bool?`
 
-**Behavior:** Applies saved `.cs` from disk first. Returns **1-based line:column** per reference, grouped by file. A `symbolName` containing `.` is an exact FQN (no fallback). If several declarations share a name, all are reported (a summary table groups references by FQN); narrow the name or pass an FQN to disambiguate. By default only positions are returned (no line text); pass `preview=true` for the source line text.
+**Behavior:** Applies saved `.cs` from disk first. Returns **1-based line:column** per reference, grouped by file. A `symbolName` containing `.` is an exact FQN (no fallback). If several declarations share a name, all are reported (a summary table groups references by FQN, with a `First` line:col column); narrow the name or pass an FQN to disambiguate. FQN does not distinguish method overloads (all overloads with the same name in the same type are reported); to select one overload use 1-based `line`/`column` in `find_symbol_references` or `rename_symbol`. By default only positions are returned (no line text); pass `preview=true` for the source line text.
 </details>
 
 <details>
@@ -869,7 +897,7 @@ cd D:\Devel\YourApp
 
 Когда tool принимает `filePath`, относительные значения резолвятся относительно корня загруженного workspace; если workspace не загружен — `Environment.CurrentDirectory`. Workspace берётся из конфига `RoslynMcp.jsonc` (`workspace-path`) и грузится **лениво** — первый семантический вызов после старта может занять минуты (поднимите host MCP `timeout` до ≥ 600000 мс).
 
-Зарегистрировано **40** инструментов (список ниже) и **1** MCP-промпт (`RefactoringAssistantPrompt`).
+Зарегистрировано **42** инструмента (список ниже) и **1** MCP-промпт (`RefactoringAssistantPrompt`).
 
 ### Workspace
 
@@ -885,6 +913,24 @@ cd D:\Devel\YourApp
 **Поведение:** путь и свойства MSBuild по умолчанию из `RoslynMcp.jsonc`; аргументы переопределяют конфиг. Вызывайте после `dotnet build` (generated `obj`), правок `.csproj`/`.sln`/`Directory.Build.props` или смены проекта. Обычные сохранения `.cs` не требуют reload (disk-sync). Первая загрузка большого решения может занять минуты — поднимите host MCP timeout.
 </details>
 
+<details>
+<summary><code>load_workspace</code> — Явно загружает <code>.sln</code>/<code>.slnx</code>/<code>.csproj</code> без перезапуска MCP-сервера.</summary>
+
+**Параметры:**
+- `workspacePath: string` — **обязателен**: абсолютный путь к `.sln`, `.slnx` или `.csproj` (не каталог). Конфиг `workspace-path` здесь **не** подставляется (это роль `reload`).
+- `configuration: string?` / `platform: string?` / `targetFramework: string?` — опциональные глобальные свойства MSBuild (не указывать — SDK/дефолт solution).
+
+**Поведение:** используйте, если в `RoslynMcp.jsonc` не задан `workspace-path` (иначе конфигурационный workspace грузится лениво и этот тул не нужен), чтобы загрузить другое решение, чем в конфиге, или переопределить `configuration`/`platform`/`target-framework`. Тот же путь + свойства → кэш (если проект-граф не stale); другой путь или свойства подменяют текущий workspace. Крупные решения — минуты — host timeout ≥ 600000. После успешной загрузки сохранённые `.cs` синхронизируются с диска автоматически; изменённый `.csproj`/`.sln` требует `reload` (или `reset_workspace` + `load_workspace`).
+</details>
+
+<details>
+<summary><code>reset_workspace</code> — Освобождает in-process MSBuildWorkspace и сбрасывает кэш solution.</summary>
+
+**Параметры:** нет.
+
+**Поведение:** освобождает память / даёт чистое состояние. Используйте при разработке самого сервера или перед сменой solution/параметров через `load_workspace`. Обычные правки `.cs` и generated `obj` после build reset **не** требуют — используйте `reload`. Не перезапускает процесс MCP — если пересобран сам бинарник сервера, используйте `stop_mcp_server`.
+</details>
+
 ### Семантика / Навигация
 
 <details>
@@ -894,7 +940,7 @@ cd D:\Devel\YourApp
 - `symbolName: string` — имя класса, интерфейса, struct, enum или члена, либо точный FQN.
 - `maxResults: int?`, `preview: bool?`
 
-**Поведение:** `symbolName` с `.` трактуется как точный FQN (без fallback на простое имя); при отсутствии совпадения ошибка перечисляет кандидатов FQN. Возвращает display-строку символа, **полное имя (FQN)** и **1-based file:line:col**. Для «где **объявлен** X?» не используй текстовый поиск и не `grep`/`findstr`/`Select-String` из терминала. Для произвольного текста по файлам — встроенный **`grep`** среды.
+**Поведение:** `symbolName` с `.` трактуется как точный FQN (без fallback на простое имя); при отсутствии совпадения ошибка перечисляет кандидатов FQN. Возвращает display-строку символа, **полное имя (FQN)** и **1-based file:line:col**. FQN не различает перегрузки метода (выдаются все перегрузки с одним именем в одном типе); чтобы выбрать одну — 1-based `line`/`column` в `find_symbol_references` или `rename_symbol`. Для «где **объявлен** X?» не используй текстовый поиск и не `grep`/`findstr`/`Select-String` из терминала. Для произвольного текста по файлам — встроенный **`grep`** среды.
 </details>
 
 <details>
@@ -904,7 +950,7 @@ cd D:\Devel\YourApp
 - `symbolName: string` — объявленное имя типа или члена, либо точный FQN.
 - `maxResults: int?`, `preview: bool?`
 
-**Поведение:** сначала подмешиваются сохранённые `.cs` с диска. Возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам. `symbolName` с `.` — точный FQN (без fallback). Если несколько одноимённых символов — выводятся все (сводная таблица группирует ссылки по FQN); сузьте имя или передайте FQN. По умолчанию только позиции; `preview=true` добавляет текст строки.
+**Поведение:** сначала подмешиваются сохранённые `.cs` с диска. Возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам. `symbolName` с `.` — точный FQN (без fallback). Если несколько одноимённых символов — выводятся все (сводная таблица группирует ссылки по FQN, со столбцом `First` line:col); сузьте имя или передайте FQN. FQN не различает перегрузки метода (выдаются все перегрузки с одним именем в одном типе); чтобы выбрать одну — 1-based `line`/`column` в `find_symbol_references` или `rename_symbol`. По умолчанию только позиции; `preview=true` добавляет текст строки.
 </details>
 
 <details>

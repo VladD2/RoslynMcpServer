@@ -213,6 +213,7 @@ public sealed class NavigationTools
         + "Before search, **saved** `.cs` on disk (IDE save, git, `dotnet format`) are merged into that index; unsaved editor buffers are not. "
         + "For each match it returns the symbol display string, the **fully-qualified name (FQN)**, every **source** definition file path, and the **1-based** starting line and column. "
         + "A `symbolName` containing `.` is treated as a **fully-qualified name (exact match)**; if it matches no declaration, the error lists the candidate FQNs (no fallback to the simple name). "
+        + "FQN does not distinguish method overloads (all overloads with the same name in the same type are reported); to select one overload use 1-based `line`/`column` in `find_symbol_references` or `rename_symbol`. "
         + "Use this when you need to know **where a C# type or member is defined** (class, interface, struct, enum, method, property, etc.). "
         + "**Do not** answer “where is it **declared**?” with plain-text search or by running grep/findstr/Select-String from a terminal over the tree—those walk `bin/`, `obj/`, and generated trees, are easy to mis-read, and can trigger access violations or lock contention. "
         + "For arbitrary text search across files, use your environment’s built-in **`grep`** tool (not `bash`/`PowerShell` pipelines). "
@@ -241,7 +242,8 @@ public sealed class NavigationTools
                 return ToolTelemetry.TraceAndReturn(
                     nameof(FindSymbolDefinition),
                     WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
-                        "Error: No active workspace."));
+                        "Error: No active workspace.",
+                        _solutionManager.ConfiguredWorkspacePath));
             }
 
             var trimmedName = symbolName.Trim();
@@ -336,6 +338,7 @@ public sealed class NavigationTools
         + "If several declarations share the same simple name, all of them are reported (a summary table groups references by fully-qualified name); "
         + "narrow `symbolName` (or pass an FQN) to disambiguate, or use `find_symbol_definition` / `find_symbol_references` with a known file. "
         + "A `symbolName` containing `.` is treated as a **fully-qualified name (exact match)**; if it matches no declaration, the error lists the candidate FQNs (no fallback to the simple name). "
+        + "FQN does not distinguish method overloads (all overloads with the same name in the same type are reported); to select one overload use 1-based `line`/`column` in `find_symbol_references` or `rename_symbol`. "
         + "By default: positions only (file:line:col), no line text; pass `preview=true` when you need the source line text. "
         + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
     public async Task<string> FindUsages(
@@ -362,7 +365,8 @@ public sealed class NavigationTools
                 return ToolTelemetry.TraceAndReturn(
                     toolName,
                     WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
-                        "Error: No active workspace."));
+                        "Error: No active workspace.",
+                        _solutionManager.ConfiguredWorkspacePath));
             }
 
             var trimmedName = symbolName.Trim();
@@ -440,11 +444,22 @@ public sealed class NavigationTools
 
                 sb.AppendLine($"{ordered.Count} declaration(s) match this name:");
                 sb.AppendLine();
-                sb.AppendLine("| FQN | References |");
-                sb.AppendLine("| --- | --- |");
+                sb.AppendLine("| FQN | References | First |");
+                sb.AppendLine("| --- | --- | --- |");
                 foreach (var (symbol, locations) in ordered)
                 {
-                    sb.AppendLine($"| {GetSymbolFqn(symbol)} | {locations.Count} |");
+                    string firstPosition;
+                    if (locations.Count == 0)
+                    {
+                        firstPosition = "—";
+                    }
+                    else
+                    {
+                        var firstPos = locations[0].Location.GetLineSpan().StartLinePosition;
+                        firstPosition = $"{firstPos.Line + 1}:{firstPos.Character + 1}";
+                    }
+
+                    sb.AppendLine($"| {GetSymbolFqn(symbol)} | {locations.Count} | {firstPosition} |");
                 }
 
                 sb.AppendLine();
@@ -528,7 +543,8 @@ public sealed class NavigationTools
                 return ToolTelemetry.TraceAndReturn(
                     toolName,
                     WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
-                        "Error: No active workspace."));
+                        "Error: No active workspace.",
+                        _solutionManager.ConfiguredWorkspacePath));
             }
 
             var trimmedName = symbolName.Trim();
@@ -536,7 +552,7 @@ public sealed class NavigationTools
                 solution, trimmedName, SymbolFilter.Type, cancellationToken).ConfigureAwait(false);
             if (fqnError is not null)
             {
-                return ToolTelemetry.TraceAndReturn(toolName, fqnError);
+                return ToolTelemetry.TraceAndReturn(toolName, _solutionManager.WithDiskSyncNotes(fqnError));
             }
 
             var typeSymbols = symbolMatches
@@ -548,7 +564,8 @@ public sealed class NavigationTools
             {
                 return ToolTelemetry.TraceAndReturn(
                     toolName,
-                    $"No type declaration named `{trimmedName}` was found in the current solution.");
+                    _solutionManager.WithDiskSyncNotes(
+                        $"No type declaration named `{trimmedName}` was found in the current solution."));
             }
 
             var showPreview = ResolvePreview(preview);
@@ -768,6 +785,9 @@ public sealed class NavigationTools
     /// after stripping a leading <c>global::</c> from both sides).
     /// When the FQN matches nothing, returns an empty list and an error listing the candidate FQNs — no silent
     /// fallback to the simple name. Otherwise returns all declarations unchanged.
+    /// Note: <see cref="GetSymbolFqn"/> does not distinguish method overloads — all overloads with the same name
+    /// in the same type produce the same FQN and are all reported; overload selection is by 1-based
+    /// <c>line</c>/<c>column</c> (<c>find_symbol_references</c> / <c>rename_symbol</c>).
     /// </summary>
     internal static async Task<(List<ISymbol> Matches, string? Error)> ResolveDeclarationsAsync(
         Solution solution,
@@ -1052,7 +1072,7 @@ public sealed class NavigationTools
         [Description("Method name (ignored when `line`/`column` are provided).")] string? methodName = null,
         [Description("1-based line of the method (declaration or invocation); must be provided together with `column`.")] int? line = null,
         [Description("1-based column of the method (declaration or invocation); must be provided together with `line`.")] int? column = null,
-        [Description("Max nodes per callers/callees list (default 25). When the total number of nodes exceeds this cap, the full graph is written to a temp file.")] int maxNodes = 25,
+        [Description("Cap on the **total** number of nodes (callers + callees; default 25). When exceeded, the full graph (same markdown) is written to a temp file.")] int maxNodes = 25,
         [Description("When true, includes callees outside the loaded solution (e.g. BCL).")] bool includeExternalCallees = false,
         CancellationToken cancellationToken = default)
     {

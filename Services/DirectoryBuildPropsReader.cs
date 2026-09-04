@@ -4,7 +4,7 @@ namespace RoslynMcpServer.Services;
 
 /// <summary>
 /// Reads <c>TargetFrameworks</c> / <c>TargetFramework</c> from the nearest <c>Directory.Build.props</c>
-/// for <c>load_workspace</c> CrossTargeting guidance (not a full MSBuild evaluation).
+/// for <c>reload</c> / lazy config load / <c>load_workspace</c> CrossTargeting guidance (not a full MSBuild evaluation).
 /// </summary>
 public static class DirectoryBuildPropsReader
 {

@@ -7,7 +7,7 @@ using RoslynMcpServer.Hosting;
 
 namespace RoslynMcpServer.Services;
 
-/// <summary>Compact workspace health block for <c>load_workspace</c> responses.</summary>
+/// <summary>Compact workspace health block for <c>reload</c> / lazy config load / <c>load_workspace</c> responses.</summary>
 public static class WorkspaceHealthReporter
 {
     public static string BuildHealthSection(

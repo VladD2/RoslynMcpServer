@@ -37,7 +37,7 @@ public static class AssemblyReferenceResolver
             return new ResolveResult(
                 false,
                 null,
-                "Error: no active workspace. Call `load_workspace` first, or pass `assemblyPath` to a `.dll` on disk.");
+                "Error: no active workspace. Set `workspace-path` in `RoslynMcp.jsonc`, call `reload`/`load_workspace`, or pass `assemblyPath` to a `.dll` on disk.");
         }
 
         var targetAssemblyName = Path.GetFileNameWithoutExtension(assemblyName.Trim());

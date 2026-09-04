@@ -113,6 +113,95 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
     }
 
     /// <summary>
+    /// F2: a host timeout/abort mid lazy load must surface the preformatted client-abort report
+    /// (<see cref="WorkspaceLoadCancelledException"/>) instead of being swallowed and reported as
+    /// "no active workspace" (which sends the agent into a retry loop on the same host timeout).
+    /// </summary>
+    [Fact]
+    public async Task GetCurrentSolutionAfterDiskSync_host_cancel_during_lazy_load_throws_cancelled_exception()
+    {
+        var config = _fixture.CreateConfig(_fixture.ConfigProjectPath);
+        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var loadTask = manager.GetCurrentSolutionAfterDiskSyncAsync(cts.Token);
+
+            // A real MSBuild load takes seconds; wait until it is in flight (not yet complete).
+            var deadline = DateTime.UtcNow.AddSeconds(60);
+            while (!loadTask.IsCompleted && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(25);
+            }
+
+            if (loadTask.IsCompleted)
+            {
+                // The load finished (or failed) before we could cancel — nothing to assert here.
+                try
+                {
+                    await loadTask;
+                }
+                catch
+                {
+                    // A real load failure is not what this test asserts.
+                }
+
+                return;
+            }
+
+            cts.Cancel();
+
+            var ex = await Assert.ThrowsAnyAsync<WorkspaceLoadCancelledException>(() => loadTask);
+            Assert.Contains("Workspace Load Cancelled (client abort)", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await manager.ClearWorkspaceAsync();
+        }
+    }
+
+    /// <summary>F3: a configured <c>workspace-path</c> that does not exist on disk falls back to walk-up for file-scoped requests.</summary>
+    [Fact]
+    public async Task FileScoped_request_with_broken_config_path_falls_back_to_walk_up()
+    {
+        // The config points at a path that does not exist; the closest .csproj to the file is Deep.csproj (walk-up).
+        var config = _fixture.CreateConfig(Path.Combine(_fixture.Root, "DoesNotExist.sln"));
+        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
+        try
+        {
+            var document = await manager.FindDocumentAsync(_fixture.DeepSourcePath);
+
+            Assert.NotNull(document);
+            // The walk-up candidate (Deep.csproj) is loaded, not the broken config path.
+            Assert.Equal(Path.GetFullPath(_fixture.DeepProjectPath), manager.GetLoadedWorkspacePath(), StringComparer.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await manager.ClearWorkspaceAsync();
+        }
+    }
+
+    /// <summary>F3: a broken config path makes the solution-wide lazy load a no-op (null solution).</summary>
+    [Fact]
+    public async Task GetCurrentSolutionAfterDiskSync_with_broken_config_path_returns_null()
+    {
+        var config = _fixture.CreateConfig(Path.Combine(_fixture.Root, "DoesNotExist.sln"));
+        var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
+        try
+        {
+            var solution = await manager.GetCurrentSolutionAfterDiskSyncAsync();
+
+            Assert.Null(solution);
+            Assert.Null(manager.GetLoadedWorkspacePath());
+        }
+        finally
+        {
+            await manager.ClearWorkspaceAsync();
+        }
+    }
+
+    /// <summary>
     /// One temporary project tree: <c>Config/Config.csproj</c> (the config project) with
     /// <c>Config/Deep/Deep.csproj</c> nested inside (its own .csproj — the walk-up candidate for files in
     /// <c>Deep/</c>).

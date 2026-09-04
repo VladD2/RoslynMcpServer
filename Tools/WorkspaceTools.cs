@@ -71,6 +71,63 @@ public sealed class WorkspaceTools
             cancellationToken);
     }
 
+    [McpServerTool(Name = "load_workspace", Title = "Load C# workspace explicitly")]
+    [Description(
+        "Explicitly loads a `.sln`/`.slnx`/`.csproj` into the semantic engine **without restarting the MCP server**. "
+        + "Use when `workspace-path` is not set in `RoslynMcp.jsonc` (the configured workspace otherwise loads lazily and this tool is not needed), "
+        + "to load a different solution than the config, or to override `configuration`/`platform`/`target-framework` "
+        + "(same path + properties returns the cache unless the project graph is stale). "
+        + "A different path or properties replaces the currently loaded workspace. "
+        + "Large solutions can take minutes — host timeout ≥ 600000. "
+        + "After a successful load, saved `.cs` sync from disk automatically; "
+        + "a changed `.csproj`/`.sln` needs `reload` (or `reset_workspace` + `load_workspace`).")]
+    public Task<string> LoadWorkspace(
+        [Description("Absolute path to a `.sln`, `.slnx`, or `.csproj` file (not a directory). The config `workspace-path` is **not** substituted here — that is the role of `reload`.")]
+        string workspacePath,
+        [Description(
+            "Optional MSBuild Configuration global property (e.g. `Debug`, `Release`, `Sit-Debug`). "
+            + "Omit for the SDK/solution default.")]
+        string? configuration = null,
+        [Description(
+            "Optional MSBuild Platform global property (e.g. `AnyCPU`, `x64`). `Any CPU` is normalized to `AnyCPU`. "
+            + "Omit for the SDK/solution default.")]
+        string? platform = null,
+        [Description(
+            "Optional MSBuild TargetFramework global property (e.g. `net10.0`, `netstandard2.0`). "
+            + "Omit for the SDK/solution default.")]
+        string? targetFramework = null,
+        CancellationToken cancellationToken = default)
+    {
+        var path = NormalizeOptional(workspacePath);
+        if (path is null)
+        {
+            return Task.FromResult(ToolTelemetry.TraceAndReturn(
+                nameof(LoadWorkspace),
+                "Error: `workspacePath` is required (absolute `.sln`/`.slnx`/`.csproj` path; the config `workspace-path` is not substituted — use `reload` for that)."));
+        }
+
+        return _responseBuilder.LoadWorkspaceAsync(
+            path,
+            NormalizeOptional(configuration),
+            NormalizeOptional(platform),
+            NormalizeOptional(targetFramework),
+            cancellationToken);
+    }
+
+    [McpServerTool(Name = "reset_workspace", Title = "Reset C# workspace")]
+    [Description(
+        "Disposes the in-process MSBuildWorkspace and drops the cached solution (frees memory, clean state). "
+        + "Use while developing this server, or before switching solutions/parameters via `load_workspace`. "
+        + "Ordinary `.cs` edits and generated `obj` after build do **not** require reset — use `reload`. "
+        + "Does not restart the MCP process — use `stop_mcp_server` if the server binary itself was rebuilt.")]
+    public async Task<string> ResetWorkspace(CancellationToken cancellationToken = default)
+    {
+        await _solutionManager.ClearWorkspaceAsync(cancellationToken);
+        return ToolTelemetry.TraceAndReturn(
+            nameof(ResetWorkspace),
+            "Workspace cleared. Set `workspace-path` in `RoslynMcp.jsonc` for lazy load, call `reload`, or call `load_workspace` with a `.sln`/`.slnx`/`.csproj` path.");
+    }
+
     private static string? NormalizeOptional(string? value)
     {
         value = value?.Trim();
@@ -78,9 +135,8 @@ public sealed class WorkspaceTools
     }
 
     /// <summary>
-    /// Shared load + response builder (former <c>load_workspace</c> body): disposes the current workspace
-    /// (<c>ClearWorkspaceAsync</c> — the cache is empty afterwards, so <c>LoadAsync</c> reloads from disk),
-    /// then loads and builds the health block / load-failure branches.
+    /// Shared load + response builder for <c>reload</c> (dispose + load) and <c>load_workspace</c>
+    /// (explicit load by path): <c>LoadAsync</c> + all load-failure branches + the health block.
     /// </summary>
     private sealed class LoadWorkspaceResponseBuilder
     {
@@ -109,6 +165,43 @@ public sealed class WorkspaceTools
                 return ToolTelemetry.TraceAndReturn(nameof(WorkspaceTools.Reload), "Reload was cancelled.");
             }
 
+            return await LoadAndBuildResponseAsync(
+                nameof(WorkspaceTools.Reload),
+                path,
+                configuration,
+                platform,
+                targetFramework,
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Explicit load by path (no <c>ClearWorkspaceAsync</c>): same path + properties returns the cache
+        /// (unless the project graph is stale); a different path or properties replaces the current workspace.
+        /// </summary>
+        public Task<string> LoadWorkspaceAsync(
+            string path,
+            string? configuration,
+            string? platform,
+            string? targetFramework,
+            CancellationToken cancellationToken)
+        {
+            return LoadAndBuildResponseAsync(
+                nameof(WorkspaceTools.LoadWorkspace),
+                path,
+                configuration,
+                platform,
+                targetFramework,
+                cancellationToken);
+        }
+
+        private async Task<string> LoadAndBuildResponseAsync(
+            string toolName,
+            string path,
+            string? configuration,
+            string? platform,
+            string? targetFramework,
+            CancellationToken cancellationToken)
+        {
             Solution solution;
             try
             {
@@ -121,13 +214,13 @@ public sealed class WorkspaceTools
             }
             catch (ArgumentException ex)
             {
-                return ToolTelemetry.TraceAndReturn(nameof(WorkspaceTools.Reload), $"Error: {ex.Message}");
+                return ToolTelemetry.TraceAndReturn(toolName, $"Error: {ex.Message}");
             }
             catch (OperationCanceledException ex)
             {
-                _logger.LogWarning(ex, "reload cancelled by client for {Path}", path);
+                _logger.LogWarning(ex, "{ToolName} cancelled by client for {Path}", toolName, path);
                 return ToolTelemetry.TraceAndReturn(
-                    nameof(WorkspaceTools.Reload),
+                    toolName,
                     WorkspaceLoadGuidance.FormatClientCancelledWorkspaceLoadMessage(path)
                     + Environment.NewLine
                     + MsBuildEnvironmentInfo.FormatMarkdownSection());
@@ -135,7 +228,7 @@ public sealed class WorkspaceTools
             catch (RoslynMsBuildBuildHostException ex)
             {
                 _logger.LogError(ex, "Failed to load workspace from {Path} (VS 2026 / MSBuild 18 BuildHost)", path);
-                return ToolTelemetry.TraceAndReturn(nameof(WorkspaceTools.Reload), ex.Message);
+                return ToolTelemetry.TraceAndReturn(toolName, ex.Message);
             }
             catch (Exception ex)
             {
@@ -143,17 +236,17 @@ public sealed class WorkspaceTools
                 if (WorkspaceLoadGuidance.IsRoslynMsBuildBuildHostFailure(ex))
                 {
                     return ToolTelemetry.TraceAndReturn(
-                        nameof(WorkspaceTools.Reload),
+                        toolName,
                         WorkspaceLoadGuidance.FormatRoslynMsBuildBuildHostFailureMessage(path));
                 }
 
-                return ToolTelemetry.TraceAndReturn(nameof(WorkspaceTools.Reload), BuildFailureReport(path, new[] { ex.Message }));
+                return ToolTelemetry.TraceAndReturn(toolName, BuildFailureReport(path, new[] { ex.Message }));
             }
 
-            return BuildSuccessResponse(solution, path);
+            return BuildSuccessResponse(toolName, solution, path);
         }
 
-        private string BuildSuccessResponse(Solution solution, string path)
+        private string BuildSuccessResponse(string toolName, Solution solution, string path)
         {
             var projects = solution.Projects.ToList();
             var projectCount = projects.Count;
@@ -167,7 +260,7 @@ public sealed class WorkspaceTools
                 if (diagnostics.Any(WorkspaceDiagnosticFormatter.IsMissingTargetFrameworkEvaluation))
                 {
                     return ToolTelemetry.TraceAndReturn(
-                        nameof(WorkspaceTools.Reload),
+                        toolName,
                         WorkspaceLoadGuidance.FormatMissingTargetFrameworkWorkspaceLoadMessage(
                             path,
                             diagnostics,
@@ -178,7 +271,7 @@ public sealed class WorkspaceTools
                 if (diagnostics.Any(WorkspaceDiagnosticFormatter.IsMissingCompileTarget))
                 {
                     return ToolTelemetry.TraceAndReturn(
-                        nameof(WorkspaceTools.Reload),
+                        toolName,
                         WorkspaceLoadGuidance.FormatMissingCompileTargetWorkspaceLoadMessage(
                             path,
                             diagnostics,
@@ -190,12 +283,12 @@ public sealed class WorkspaceTools
                 if (diagnostics.Any(WorkspaceLoadGuidance.IsRoslynMsBuildBuildHostFailure))
                 {
                     return ToolTelemetry.TraceAndReturn(
-                        nameof(WorkspaceTools.Reload),
+                        toolName,
                         WorkspaceLoadGuidance.FormatRoslynMsBuildBuildHostFailureMessage(path));
                 }
 
                 return ToolTelemetry.TraceAndReturn(
-                    nameof(WorkspaceTools.Reload),
+                    toolName,
                     BuildFailureReport(
                         path,
                         diagnostics.Count > 0 ? diagnostics : new[] { "Workspace loaded with zero projects." }));
@@ -275,7 +368,7 @@ public sealed class WorkspaceTools
                 }
             }
 
-            return ToolTelemetry.TraceAndReturn(nameof(WorkspaceTools.Reload), sb.ToString());
+            return ToolTelemetry.TraceAndReturn(toolName, sb.ToString());
         }
 
         /// <summary>

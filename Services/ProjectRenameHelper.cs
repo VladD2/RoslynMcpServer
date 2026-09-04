@@ -203,7 +203,7 @@ public static class ProjectRenameHelper
         }
 
         sb.AppendLine();
-        sb.AppendLine("After apply: `reset_workspace` → `load_workspace` → optional `rename_symbol` → `run_dotnet_build` / `run_dotnet_test`.");
+        sb.AppendLine("After apply: `reload` (or `reset_workspace` + `load_workspace`) → optional `rename_symbol` → `run_dotnet_build` / `run_dotnet_test`.");
         return sb.ToString().TrimEnd();
     }
 

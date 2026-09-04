@@ -72,6 +72,12 @@ public sealed class SolutionManager
 
     public IReadOnlyList<WorkspaceDiagnostic> LastDiagnostics => _lastDiagnostics;
 
+    /// <summary>
+    /// <c>workspace-path</c> from the <c>RoslynMcp.jsonc</c> config (or <see langword="null"/>).
+    /// Used by the tools to build conditional "no workspace" guidance without holding the config themselves.
+    /// </summary>
+    public string? ConfiguredWorkspacePath => _workspaceConfig.WorkspacePath;
+
     /// <summary>MSBuild <c>Configuration</c> used for the last successful <see cref="LoadAsync"/>, or <see langword="null"/>.</summary>
     public string? LoadedConfiguration => _loadedConfiguration;
 
@@ -261,6 +267,16 @@ public sealed class SolutionManager
             {
                 await TryLoadConfiguredWorkspaceUnderLockAsync(cancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException oce)
+            {
+                // Host timeout/abort mid lazy load: surface the preformatted client-abort report instead of
+                // swallowing the cancel and reporting "no active workspace" (which sends the agent into a
+                // retry loop on the same host timeout).
+                throw new WorkspaceLoadCancelledException(
+                    WorkspaceLoadGuidance.FormatClientCancelledWorkspaceLoadMessage(
+                        _loadedPath ?? _workspaceConfig.WorkspacePath ?? "(none)"),
+                    oce);
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(
@@ -311,7 +327,8 @@ public sealed class SolutionManager
 
     /// <summary>
     /// Hint when <c>.csproj</c> / solution / Directory.Build.* changed on disk. Source <c>.cs</c> is still synced;
-    /// project graph (refs, globs) needs <c>reset_workspace</c> + <c>load_workspace</c> unless the next load skips cache.
+    /// project graph (refs, globs) needs <c>reload</c> (or <c>reset_workspace</c> + <c>load_workspace</c>) —
+    /// a stale project graph skips the load cache and is picked up on the next load.
     /// </summary>
     public string? GetProjectGraphStaleHint()
     {
@@ -321,8 +338,8 @@ public sealed class SolutionManager
         }
 
         return "> **Note:** A `.csproj` / `.sln` / `Directory.Build.props` changed on disk. Saved `.cs` files are synced; "
-            + "package refs and compile globs may be stale. Call `reset_workspace` then `load_workspace` "
-            + "(or `load_workspace` alone — a stale project graph skips the load cache).";
+            + "package refs and compile globs may be stale. Use `reload` (or `reset_workspace` + `load_workspace`) "
+            + "— a stale project graph is picked up on the next load.";
     }
 
     public string WithDiskSyncNotes(string body)
@@ -542,8 +559,10 @@ public sealed class SolutionManager
     /// <c>platform</c> / <c>target-framework</c>) when nothing is loaded yet. Never reloads: an already
     /// loaded workspace is kept as-is even if config values differ. Must be called with
     /// <see cref="_workspaceLock"/> held.
+    /// A configured path that does not exist on disk is a warning + fallback as if the config were absent
+    /// (file-scoped requests continue with walk-up; solution-wide requests surface the "not found" guidance).
     /// </summary>
-    /// <returns><see langword="true"/> when the config <c>workspace-path</c> is set, <see langword="false"/> when it is not.</returns>
+    /// <returns><see langword="true"/> when the config <c>workspace-path</c> is set and usable, <see langword="false"/> when it is not set or the file is not found.</returns>
     private async Task<bool> TryLoadConfiguredWorkspaceUnderLockAsync(CancellationToken cancellationToken)
     {
         var configuredPath = _workspaceConfig.WorkspacePath;
@@ -557,7 +576,10 @@ public sealed class SolutionManager
             var fullPath = Path.GetFullPath(configuredPath);
             if (!File.Exists(fullPath))
             {
-                throw new FileNotFoundException("Configured workspace file not found (config `workspace-path`).", fullPath);
+                _logger.LogWarning(
+                    "Configured workspace file not found (config workspace-path): {Path}; treating the config as absent (file-scoped requests fall back to walk-up).",
+                    fullPath);
+                return false;
             }
 
             var (configuration, platform, targetFramework) = GetConfiguredLoadProperties();
@@ -775,7 +797,7 @@ public sealed class SolutionManager
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Disk watcher failed to start for {Directory}. Symbol search stays on the load snapshot until reset_workspace.", directory);
+            _logger.LogWarning(ex, "Disk watcher failed to start for {Directory}. Symbol search stays on the load snapshot until `reload` (or `reset_workspace`).", directory);
         }
     }
 
