@@ -138,8 +138,14 @@ public sealed class WorkspaceTools
     /// Shared load + response builder for <c>reload</c> (dispose + load) and <c>load_workspace</c>
     /// (explicit load by path): <c>LoadAsync</c> + all load-failure branches + the health block.
     /// </summary>
-    private sealed class LoadWorkspaceResponseBuilder
+    internal sealed class LoadWorkspaceResponseBuilder
     {
+        /// <summary>
+        /// Maximum number of diagnostic lines in a load response. Large mixed C++/C# solutions can
+        /// produce 1000+ diagnostics (~80k tokens); the rest is counted, the full list stays in the server log.
+        /// </summary>
+        internal const int MaxDiagnosticsInResponse = 20;
+
         private readonly SolutionManager _solutionManager;
         private readonly ILogger<WorkspaceTools> _logger;
 
@@ -314,10 +320,7 @@ public sealed class WorkspaceTools
             {
                 sb.AppendLine();
                 sb.AppendLine("Workspace diagnostics:");
-                foreach (var diagnostic in diagnostics)
-                {
-                    sb.AppendLine($"- {diagnostic}");
-                }
+                AppendDiagnosticsList(sb, diagnostics);
 
                 if (diagnostics.Any(static d =>
                         d.Contains("do not have a version specified", StringComparison.OrdinalIgnoreCase)))
@@ -406,7 +409,7 @@ public sealed class WorkspaceTools
             return sb.ToString().TrimEnd();
         }
 
-        private static string BuildFailureReport(string path, IEnumerable<string> errors)
+        private static string BuildFailureReport(string path, IReadOnlyList<string> errors)
         {
             var sb = new StringBuilder();
             sb.AppendLine("## Workspace Load Failed");
@@ -414,13 +417,29 @@ public sealed class WorkspaceTools
             sb.AppendLine($"- **Path:** `{path}`");
             sb.AppendLine();
             sb.AppendLine("### Errors");
-            foreach (var error in errors)
-            {
-                sb.AppendLine($"- {error}");
-            }
+            AppendDiagnosticsList(sb, errors);
 
             sb.Append(MsBuildEnvironmentInfo.FormatMarkdownSection());
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Renders the diagnostics list capped at <see cref="MaxDiagnosticsInResponse"/> lines;
+        /// the hidden remainder is reported by a single counter line (the full list stays in the server log).
+        /// </summary>
+        internal static void AppendDiagnosticsList(StringBuilder sb, IReadOnlyList<string> diagnostics)
+        {
+            var shownCount = Math.Min(diagnostics.Count, MaxDiagnosticsInResponse);
+            for (var i = 0; i < shownCount; i++)
+            {
+                sb.AppendLine($"- {diagnostics[i]}");
+            }
+
+            var hiddenCount = diagnostics.Count - shownCount;
+            if (hiddenCount > 0)
+            {
+                sb.AppendLine($"- ... and {hiddenCount} more diagnostic(s) (see server log)");
+            }
         }
 
         private static string InferCompactProjectType(Project project)

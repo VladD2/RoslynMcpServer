@@ -234,4 +234,31 @@ public sealed class WorkspaceDiagnosticFormatterTests
         Assert.StartsWith("Failure:", formatted, StringComparison.Ordinal);
         Assert.True(WorkspaceDiagnosticFormatter.IsBlockingLoadFailure(formatted));
     }
+
+    [Fact]
+    public void IsBlockingLoadFailure_false_for_project_extension_not_associated_with_language()
+    {
+        var formatted = WorkspaceDiagnosticFormatter.Format(
+            "Failure",
+            "Cannot open project 'D:\\m\\src\\Native.vcxproj' because the file extension '.vcxproj' is not associated with a language.");
+        Assert.StartsWith("Failure:", formatted, StringComparison.Ordinal);
+        Assert.False(WorkspaceDiagnosticFormatter.IsBlockingLoadFailure(formatted));
+    }
+
+    [Fact]
+    public void IsBlockingLoadFailure_false_for_missing_referenced_project_file()
+    {
+        var formatted = WorkspaceDiagnosticFormatter.Format(
+            "Failure",
+            "Project file not found: 'D:\\m\\src\\product\\kiskes_common\\ui\\KasperskyLab.UI.Core.Analyzers\\KasperskyLab.UI.Core.Analyzers.csproj'");
+        Assert.StartsWith("Failure:", formatted, StringComparison.Ordinal);
+        Assert.False(WorkspaceDiagnosticFormatter.IsBlockingLoadFailure(formatted));
+    }
+
+    [Fact]
+    public void IsBlockingLoadFailure_true_for_imported_project_not_found_without_error_token()
+    {
+        const string formatted = "Failure: The imported project was not found.";
+        Assert.True(WorkspaceDiagnosticFormatter.IsBlockingLoadFailure(formatted));
+    }
 }

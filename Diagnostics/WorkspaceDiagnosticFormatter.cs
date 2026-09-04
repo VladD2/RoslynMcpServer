@@ -81,7 +81,19 @@ public static class WorkspaceDiagnosticFormatter
         IsNuGetAuditAdvisory(message)
         || IsNuGetPruneAdvisory(message)
         || IsNuGetCompatAdvisory(message)
-        || IsMsBuildDesignTimeAdvisory(message);
+        || IsMsBuildDesignTimeAdvisory(message)
+        || IsExpectedNonCSharpProjectAdvisory(message);
+
+    /// <summary>
+    /// Expected diagnostics of mixed C++/C# solutions and virtualized (ast) monorepo checkouts:
+    /// <c>Cannot open project … because the file extension '.vcxproj' is not associated with a language</c>
+    /// (C++ / other non-C# project types — Visual Studio does not give them C# services either) and
+    /// <c>Project file not found</c> (a referenced project absent from the checkout).
+    /// Both stay visible in the diagnostics list but must not fail <c>reload</c> / <c>load_workspace</c>.
+    /// </summary>
+    public static bool IsExpectedNonCSharpProjectAdvisory(string message) =>
+        message.Contains("is not associated with a language", StringComparison.OrdinalIgnoreCase)
+        || message.Contains("Project file not found", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Design-time evaluation left <c>TargetFramework</c> empty (typical of Bazel-generated csproj

@@ -121,6 +121,10 @@ If the config is **not** set, the agent can still open a workspace explicitly wi
 
 Tracks MCP tools relevant to [`AGENTS.md.sample`](AGENTS.md.sample) (copy into app repos as `AGENTS.md`). Current server version: see `RoslynMcpServer.csproj`.
 
+### v1.3.1
+
+- **False "Workspace Load Failed" on mixed C++/C# solutions** — `Cannot open project … because the file extension '.vcxproj' is not associated with a language` (C++ / other non-C# project types inside a C# solution — VS does not give them C# services either) and `Project file not found` (a referenced project absent from a virtualized checkout) are no longer treated as blocking load failures — they stay visible in the diagnostics list. Load responses now cap the diagnostics list at 20 lines with a `... and N more diagnostic(s) (see server log)` counter (a large mixed solution produced 1000+ lines, ~80k tokens).
+
 ### v1.3.0
 
 - **`load_workspace` / `reset_workspace` restored** — alongside config + lazy load + `reload` (42 tools): `load_workspace` opens a `.sln`/`.slnx`/`.csproj` explicitly **without restarting the server** (no config set, or a different solution/parameters); `reset_workspace` disposes the workspace and drops the cache (frees memory / clean state, before switching solutions/parameters).
