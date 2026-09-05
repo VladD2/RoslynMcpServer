@@ -972,16 +972,39 @@ public sealed class NavigationTools
     /// (base-type chain). Generic instantiations compare via <see cref="INamedTypeSymbol.ConstructedFrom"/>
     /// so a call on <c>T&lt;int&gt;</c> matches a method declared on <c>T&lt;T&gt;</c>.
     /// </summary>
-    private static bool IsSameOrDerivedFrom(INamedTypeSymbol candidate, INamedTypeSymbol source)
+    internal static bool IsSameOrDerivedFrom(INamedTypeSymbol candidate, INamedTypeSymbol source)
     {
         for (var type = candidate; type is not null; type = type.BaseType)
         {
-            if (SymbolEqualityComparer.Default.Equals(type, source)
-                || SymbolEqualityComparer.Default.Equals(type.ConstructedFrom, source.ConstructedFrom))
+            if (IsSameType(type, source)
+                || IsSameType(type.ConstructedFrom, source.ConstructedFrom))
                 return true;
         }
         return false;
     }
+
+    /// <summary>
+    /// True when <paramref name="a"/> and <paramref name="b"/> denote the same type.
+    /// <see cref="SymbolEqualityComparer.Default"/> matches symbols within one compilation but does
+    /// NOT match a source symbol against its metadata counterpart in a referencing compilation
+    /// (a call site in a project that consumes the declaring project's built output). A miss therefore
+    /// falls back to canonical type identity — the fully-qualified name, which is stable across the
+    /// source/metadata boundary. Erring toward a match keeps a reference rather than silently dropping it.
+    /// </summary>
+    internal static bool IsSameType(INamedTypeSymbol a, INamedTypeSymbol b)
+    {
+        if (SymbolEqualityComparer.Default.Equals(a, b))
+            return true;
+
+        return TypeIdentityKey(a) == TypeIdentityKey(b);
+    }
+
+    /// <summary>
+    /// Canonical identity of a type: its fully-qualified name (including generic arguments). Stable across
+    /// the source/metadata boundary and across compilations, unlike <see cref="SymbolEqualityComparer.Default"/>.
+    /// </summary>
+    private static string TypeIdentityKey(INamedTypeSymbol type) =>
+        type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
     private static Dictionary<string, Document> BuildDocumentByPathMap(Solution solution)
     {
