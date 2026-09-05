@@ -111,31 +111,19 @@ public sealed class NavigationTools
             if (hasLine)
             {
                 var text = await document.GetTextAsync(cancellationToken);
-                var effectiveColumn = column;
-                if (effectiveColumn is null)
-                {
-                    var (computedColumn, computeError) = ComputeColumnOnLine(text, line!.Value, nameForOutput);
-                    if (computeError is not null)
-                    {
-                        return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), $"Error: {computeError}");
-                    }
+                var (resolvedLine, resolvedColumn, resolveError) = ResolveSymbolPosition(syntaxRoot, text, line!.Value, column, nameForOutput);
+                if (resolveError is not null)
+                    return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), $"Error: {resolveError}");
 
-                    effectiveColumn = computedColumn;
-                }
-
-                var (offset, positionError) = SourcePositionHelper.ToOffset(text, line!.Value, effectiveColumn!.Value);
+                var (offset, positionError) = SourcePositionHelper.ToOffset(text, resolvedLine, resolvedColumn);
                 if (positionError is not null)
-                {
                     return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), $"Error: {positionError}");
-                }
 
                 var resolvedSymbol = SourcePositionHelper.GetSymbolAtPosition(syntaxRoot, semanticModel, offset, cancellationToken);
                 if (resolvedSymbol is null)
-                {
                     return ToolTelemetry.TraceAndReturn(
                         nameof(FindSymbolReferences),
-                        $"No symbol found at line {line!.Value}, column {effectiveColumn!.Value} in `{fullPath}`.");
-                }
+                        $"No symbol found at line {resolvedLine}, column {resolvedColumn} in `{fullPath}`.");
 
                 symbol = resolvedSymbol;
 
@@ -308,31 +296,19 @@ public sealed class NavigationTools
             if (hasLine)
             {
                 var text = await document.GetTextAsync(cancellationToken).ConfigureAwait(false);
-                var effectiveColumn = column;
-                if (effectiveColumn is null)
-                {
-                    var (computedColumn, computeError) = ComputeColumnOnLine(text, line!.Value, nameForOutput);
-                    if (computeError is not null)
-                    {
-                        return ToolTelemetry.TraceAndReturn(toolName, $"Error: {computeError}");
-                    }
+                var (resolvedLine, resolvedColumn, resolveError) = ResolveSymbolPosition(syntaxRoot, text, line!.Value, column, nameForOutput);
+                if (resolveError is not null)
+                    return ToolTelemetry.TraceAndReturn(toolName, $"Error: {resolveError}");
 
-                    effectiveColumn = computedColumn;
-                }
-
-                var (offset, positionError) = SourcePositionHelper.ToOffset(text, line!.Value, effectiveColumn!.Value);
+                var (offset, positionError) = SourcePositionHelper.ToOffset(text, resolvedLine, resolvedColumn);
                 if (positionError is not null)
-                {
                     return ToolTelemetry.TraceAndReturn(toolName, $"Error: {positionError}");
-                }
 
                 var resolvedSymbol = SourcePositionHelper.GetSymbolAtPosition(syntaxRoot, semanticModel, offset, cancellationToken);
                 if (resolvedSymbol is null)
-                {
                     return ToolTelemetry.TraceAndReturn(
                         toolName,
-                        $"No symbol found at line {line!.Value}, column {effectiveColumn!.Value} in `{fullPath}`.");
-                }
+                        $"No symbol found at line {resolvedLine}, column {resolvedColumn} in `{fullPath}`.");
 
                 symbol = resolvedSymbol;
                 nameForOutput = symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
@@ -1120,6 +1096,112 @@ public sealed class NavigationTools
         }
 
         return (index + symbolName.Length, null);
+    }
+
+    /// <summary>
+    /// Resolves a 1-based (line, column) for <paramref name="symbolName"/> starting from <paramref name="line"/>.
+    /// When <paramref name="column"/> is provided it is used as-is. Otherwise the column is computed from the first
+    /// occurrence of <paramref name="symbolName"/> on <paramref name="line"/>; if the name does not occur on that
+    /// line, the nearest enclosing member's body is searched as a fallback.
+    /// Returns (line, column, null) on success or (0, 0, error) on failure.
+    /// </summary>
+    private static (int Line, int Column, string? Error) ResolveSymbolPosition(
+        SyntaxNode syntaxRoot, SourceText text, int line, int? column, string symbolName)
+    {
+        if (column.HasValue)
+            return (line, column.Value, null);
+
+        var (computedColumn, computeError) = ComputeColumnOnLine(text, line, symbolName);
+        if (computedColumn.HasValue)
+            return (line, computedColumn.Value, null);
+
+        // Only attempt the member-body fallback when the line is in range.
+        if (line >= 1 && line <= text.Lines.Count)
+        {
+            var (fbLine, fbCol, fbError) = FindSymbolInEnclosingMember(syntaxRoot, text, line, symbolName);
+            if (fbError is null)
+                return (fbLine!.Value, fbCol!.Value, null);
+
+            return (0, 0, fbError);
+        }
+
+        return (0, 0, computeError);
+    }
+
+    /// <summary>
+    /// Fallback for when <paramref name="symbolName"/> is not found on the exact <paramref name="line"/>:
+    /// finds the nearest enclosing member declaration (method/constructor/property/operator) that spans that line
+    /// and searches for <paramref name="symbolName"/> within the member's body.
+    /// Returns the absolute (1-based line, 1-based column) of the first occurrence in the body, or an error.
+    /// </summary>
+    private static (int? Line, int? Column, string? Error) FindSymbolInEnclosingMember(
+        SyntaxNode syntaxRoot, SourceText text, int line, string symbolName)
+    {
+        var position = text.Lines[line - 1].Start;
+        var token = syntaxRoot.FindToken(position);
+
+        SyntaxNode? enclosingMember = null;
+        for (var node = token.Parent; node is not null; node = node.Parent)
+        {
+            if (node is MethodDeclarationSyntax
+                || node is ConstructorDeclarationSyntax
+                || node is DestructorDeclarationSyntax
+                || node is PropertyDeclarationSyntax
+                || node is EventDeclarationSyntax
+                || node is OperatorDeclarationSyntax
+                || node is ConversionOperatorDeclarationSyntax)
+            {
+                enclosingMember = node;
+                break;
+            }
+        }
+
+        if (enclosingMember is null)
+            return (null, null, $"Symbol `{symbolName}` was not found on line {line} (no enclosing member).");
+
+        var body = GetMemberBody(enclosingMember);
+        if (body is null)
+            return (null, null, $"Symbol `{symbolName}` was not found on line {line} (enclosing member has no body).");
+
+        var bodyText = body.GetText();
+        var index = bodyText.ToString().IndexOf(symbolName, StringComparison.Ordinal);
+        if (index < 0)
+            return (null, null, $"Symbol `{symbolName}` was not found on line {line} or in the enclosing member body.");
+
+        var absolutePosition = body.SpanStart + index + symbolName.Length;
+        var lp = text.Lines.GetLinePosition(absolutePosition);
+        return (lp.Line + 1, lp.Character, null);
+    }
+
+    private static SyntaxNode? GetMemberBody(SyntaxNode member) => member switch
+    {
+        MethodDeclarationSyntax m => (SyntaxNode?)m.Body ?? (SyntaxNode?)m.ExpressionBody?.Expression,
+        ConstructorDeclarationSyntax c => (SyntaxNode?)c.Body ?? (SyntaxNode?)c.ExpressionBody?.Expression,
+        DestructorDeclarationSyntax d => d.Body,
+        PropertyDeclarationSyntax p => GetPropertyBody(p),
+        EventDeclarationSyntax e => e.AccessorList?.Accessors
+            .SelectMany(a => new SyntaxNode?[] { a.Body, a.ExpressionBody?.Expression })
+            .FirstOrDefault(b => b is not null),
+        OperatorDeclarationSyntax o => (SyntaxNode?)o.Body ?? (SyntaxNode?)o.ExpressionBody?.Expression,
+        ConversionOperatorDeclarationSyntax co => (SyntaxNode?)co.Body ?? (SyntaxNode?)co.ExpressionBody?.Expression,
+        _ => null
+    };
+
+    private static SyntaxNode? GetPropertyBody(PropertyDeclarationSyntax p)
+    {
+        if (p.AccessorList is null)
+            return null;
+
+        foreach (var accessor in p.AccessorList.Accessors)
+        {
+            if (accessor.Body is not null)
+                return accessor.Body;
+
+            if (accessor.ExpressionBody?.Expression is not null)
+                return accessor.ExpressionBody.Expression;
+        }
+
+        return null;
     }
 
     /// <summary>
