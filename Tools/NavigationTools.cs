@@ -45,6 +45,7 @@ public sealed class NavigationTools
         + "Without a position, `symbolName` is matched against declarations in the file (class/interface/method/property/field/event/constructor); "
         + "if several declarations share the name, an error lists the candidates (FQN + line:col) — no blind first match. "
         + "CRITICAL for safe refactoring and DI registration audits. "
+        + "For a virtual/override/abstract method, Roslyn reports every call site in the whole virtual method family (any override, any receiver type): the result notes how many are virtual dispatch sites, and `directOnly: true` keeps only references whose static receiver type is the declaring type or a derived type. "
         + "Applies **saved** `.cs` from disk first (IDE/git/`dotnet format`); unsaved editor buffers are ignored. "
         + "By default: positions only (file:line:col), no line text; pass `preview=true` when you need the source line text. "
         + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
@@ -61,6 +62,8 @@ public sealed class NavigationTools
         int? maxResults = null,
         [Description("When true, include the trimmed source line text at each reference.")]
         bool? preview = null,
+        [Description("Only meaningful for virtual/override/abstract methods: when true, keeps only direct references — call sites whose static receiver type is the declaring type or a derived type (virtual dispatch sites on other types in the virtual method family are filtered out). Default false: all references, with a note counting the virtual dispatch sites.")]
+        bool directOnly = false,
         CancellationToken cancellationToken = default)
     {
         try
@@ -178,6 +181,28 @@ public sealed class NavigationTools
                 return ToolTelemetry.TraceAndReturn(nameof(FindSymbolReferences), $"No usages found for `{nameForOutput}`.");
             }
 
+            // For a virtual/override/abstract method, SymbolFinder returns every call site in the whole
+            // virtual method family (any override, any receiver type) — VS 2022 "Find All References" does
+            // the same. Classify the sites so `directOnly` can filter them and the default output can note
+            // how many are virtual dispatch sites (see ClassifyVirtualReferencesAsync).
+            var virtualMethod = GetVirtualFamilyMethod(symbol);
+            var dispatchCount = 0;
+            if (virtualMethod is not null)
+            {
+                var (isDirect, _, dispatch) = await ClassifyVirtualReferencesAsync(virtualMethod, locations, cancellationToken);
+                dispatchCount = dispatch;
+                if (directOnly)
+                {
+                    locations = locations.Where((_, i) => isDirect[i]).ToList();
+                    if (locations.Count == 0)
+                    {
+                        return ToolTelemetry.TraceAndReturn(
+                            nameof(FindSymbolReferences),
+                            $"No direct references found for `{nameForOutput}`: all {dispatchCount} reference(s) are virtual dispatch sites (pass directOnly: false to include them).");
+                    }
+                }
+            }
+
             var showPreview = ResolvePreview(preview);
             var cap = ResolveMaxResults(maxResults);
             var docByPath = BuildDocumentByPathMap(solution);
@@ -186,8 +211,20 @@ public sealed class NavigationTools
             var sb = new StringBuilder();
             sb.AppendLine($"## References for `{nameForOutput}` (identifier length: {nameForOutput.Length})");
             sb.AppendLine();
-            sb.AppendLine($"Found **{locations.Count}** reference location(s).");
+            if (virtualMethod is not null && directOnly && dispatchCount > 0)
+            {
+                sb.AppendLine($"Found **{locations.Count}** direct reference location(s) ({dispatchCount} virtual dispatch site(s) excluded).");
+            }
+            else
+            {
+                sb.AppendLine($"Found **{locations.Count}** reference location(s).");
+            }
             sb.AppendLine();
+            if (virtualMethod is not null && !directOnly && dispatchCount > 0)
+            {
+                sb.AppendLine($"> Note: symbol is virtual/override; {dispatchCount} of the {locations.Count} reference(s) are virtual dispatch sites (the receiver type is not the declaring type or a derived type). Pass `directOnly: true` to keep only direct references.");
+                sb.AppendLine();
+            }
 
             foreach (var docGroup in locations.GroupBy(l => l.Document.FilePath ?? "(unknown file)", StringComparer.OrdinalIgnoreCase))
             {
@@ -787,6 +824,164 @@ public sealed class NavigationTools
 
     private bool ResolvePreview(bool? preview) =>
         preview ?? _workspaceConfig.Preview;
+
+    /// <summary>
+    /// The symbol when it is an instance method of a class that participates in virtual dispatch
+    /// (virtual/abstract/override); otherwise null. For such methods <c>SymbolFinder.FindReferencesAsync</c>
+    /// returns every call site in the virtual method family (any override, any receiver type), so
+    /// <c>find_symbol_references</c> post-filters them (<c>directOnly</c>) and annotates the default output.
+    /// </summary>
+    private static IMethodSymbol? GetVirtualFamilyMethod(ISymbol symbol)
+    {
+        if (symbol is not IMethodSymbol method || !(method.IsVirtual || method.IsOverride || method.IsAbstract))
+            return null;
+        if (method.ContainingType is not INamedTypeSymbol { TypeKind: TypeKind.Class })
+            return null;
+        return method;
+    }
+
+    /// <summary>
+    /// Classifies the reference locations of a virtual/override/abstract method: a location is "direct" when
+    /// its static receiver type is the declaring type or a derived type (including implicit-<c>this</c> calls
+    /// inside the declaring type or a derived type); every other resolvable receiver type is a "virtual
+    /// dispatch site" (a sibling override's receiver or a base-type variable). Locations whose receiver cannot
+    /// be resolved (metadata, type parameters, unexpected syntax) are kept — treated as direct — so the filter
+    /// never drops a reference silently. Returns a per-location flag array aligned with <paramref name="locations"/>.
+    /// </summary>
+    private static async Task<(bool[] IsDirect, int DirectCount, int DispatchCount)> ClassifyVirtualReferencesAsync(
+        IMethodSymbol method,
+        IReadOnlyList<ReferenceLocation> locations,
+        CancellationToken cancellationToken)
+    {
+        var declaringType = method.ContainingType!;
+        var isDirect = new bool[locations.Count];
+        var directCount = 0;
+        var rootsByDocument = new Dictionary<DocumentId, SyntaxNode>();
+        var modelsByDocument = new Dictionary<DocumentId, SemanticModel>();
+
+        for (var i = 0; i < locations.Count; i++)
+        {
+            var reference = locations[i];
+
+            SyntaxNode? root;
+            if (!rootsByDocument.TryGetValue(reference.Document.Id, out root))
+            {
+                root = await reference.Document.GetSyntaxRootAsync(cancellationToken);
+                if (root is not null)
+                    rootsByDocument[reference.Document.Id] = root;
+            }
+
+            SemanticModel? model;
+            if (!modelsByDocument.TryGetValue(reference.Document.Id, out model))
+            {
+                model = await reference.Document.GetSemanticModelAsync(cancellationToken);
+                if (model is not null)
+                    modelsByDocument[reference.Document.Id] = model;
+            }
+
+            var direct = root is null || model is null
+                || IsDirectVirtualReference(declaringType, reference.Location, root, model);
+            isDirect[i] = direct;
+            if (direct)
+                directCount++;
+        }
+
+        return (isDirect, directCount, locations.Count - directCount);
+    }
+
+    /// <summary>
+    /// True when the reference at <paramref name="location"/> is a direct reference to the queried method:
+    /// the static receiver type at the call site (syntax + semantic model) is <paramref name="declaringType"/>
+    /// or a derived type. Unresolvable receivers return true — the reference is kept.
+    /// </summary>
+    private static bool IsDirectVirtualReference(
+        INamedTypeSymbol declaringType,
+        Location location,
+        SyntaxNode root,
+        SemanticModel model)
+    {
+        var token = root.FindToken(location.SourceSpan.Start);
+        var nameNode = token.Parent;
+        if (nameNode is null)
+            return true;
+
+        var position = location.SourceSpan.Start;
+        var receiverType = GetCallSiteReceiverType(nameNode, model, position);
+        return receiverType is null || IsSameOrDerivedFrom(receiverType, declaringType);
+    }
+
+    /// <summary>
+    /// The static receiver type of the call site whose member name is <paramref name="nameNode"/>. Walks up
+    /// from the member name to the receiver-carrying node:
+    /// <list type="bullet">
+    /// <item><c>expr.M</c> / <c>this.M</c> / <c>base.M</c> / <c>Type.M</c> — <see cref="MemberAccessExpressionSyntax"/> (the direct parent);</item>
+    /// <item><c>expr?.M</c> / <c>expr?.M()</c> — <see cref="ConditionalAccessExpressionSyntax"/> above the
+    /// <see cref="MemberBindingExpressionSyntax"/> (and, in the invoked form, an <see cref="InvocationExpressionSyntax"/>);</item>
+    /// <item><c>M</c> / <c>M()</c> (and the declaration site itself) — no receiver: implicit <c>this</c>,
+    /// resolved to the enclosing type.</item>
+    /// </list>
+    /// Returns null when the receiver type cannot be resolved (metadata, type parameters, …).
+    /// </summary>
+    private static INamedTypeSymbol? GetCallSiteReceiverType(SyntaxNode nameNode, SemanticModel model, int position)
+    {
+        for (var node = nameNode; node is not null; node = node.Parent)
+        {
+            if (node is MemberAccessExpressionSyntax { Expression: { } receiver })
+                return GetReceiverType(model, receiver, position);
+            if (node is ConditionalAccessExpressionSyntax { Expression: { } target })
+                return GetReceiverType(model, target, position);
+            if (node is not InvocationExpressionSyntax and not MemberBindingExpressionSyntax
+                and not IdentifierNameSyntax and not GenericNameSyntax)
+                break;
+        }
+
+        return GetContainingTypeAt(model, position);
+    }
+
+    /// <summary>
+    /// The static type of a call-site receiver expression. <c>this</c> / <c>base</c> resolve to the enclosing
+    /// type (and its base) via the enclosing-symbol walk — the same source the implicit-<c>this</c> case uses.
+    /// </summary>
+    private static INamedTypeSymbol? GetReceiverType(SemanticModel model, ExpressionSyntax receiver, int position)
+    {
+        if (receiver is ThisExpressionSyntax)
+            return GetContainingTypeAt(model, position);
+        if (receiver is BaseExpressionSyntax)
+            return GetContainingTypeAt(model, position)?.BaseType;
+        var type = model.GetTypeInfo(receiver).Type as INamedTypeSymbol;
+        // An error type (broken compilation) is unclassifiable — return null so the reference is kept.
+        if (type is { TypeKind: TypeKind.Error })
+            return null;
+        return type;
+    }
+
+    /// <summary>
+    /// The innermost named type enclosing <paramref name="position"/> (walks <see cref="ISymbol.ContainingSymbol"/>
+    /// past locals/parameters/methods) — the implicit-<c>this</c> receiver type for unqualified calls.
+    /// </summary>
+    private static INamedTypeSymbol? GetContainingTypeAt(SemanticModel model, int position)
+    {
+        var symbol = model.GetEnclosingSymbol(position);
+        while (symbol is not null && symbol is not INamedTypeSymbol)
+            symbol = symbol.ContainingSymbol;
+        return symbol as INamedTypeSymbol;
+    }
+
+    /// <summary>
+    /// True when <paramref name="candidate"/> is <paramref name="source"/> itself or derives from it
+    /// (base-type chain). Generic instantiations compare via <see cref="INamedTypeSymbol.ConstructedFrom"/>
+    /// so a call on <c>T&lt;int&gt;</c> matches a method declared on <c>T&lt;T&gt;</c>.
+    /// </summary>
+    private static bool IsSameOrDerivedFrom(INamedTypeSymbol candidate, INamedTypeSymbol source)
+    {
+        for (var type = candidate; type is not null; type = type.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(type, source)
+                || SymbolEqualityComparer.Default.Equals(type.ConstructedFrom, source.ConstructedFrom))
+                return true;
+        }
+        return false;
+    }
 
     private static Dictionary<string, Document> BuildDocumentByPathMap(Solution solution)
     {

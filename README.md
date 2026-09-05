@@ -381,8 +381,9 @@ There are **42** registered tools (see list below) and **1** MCP prompt (`Refact
 - `symbolName: string?` — declaration name (class/interface/method/property/field/event/constructor); ignored when `line`/`column` are provided
 - `line: int?` / `column: int?` — 1-based position on the declaration *or* a usage (both required together) — selects the exact symbol
 - `maxResults: int?`, `preview: bool?`
+- `directOnly: bool = false` — for virtual/override/abstract methods only: keeps only references whose static receiver type is the declaring type or a derived type (virtual dispatch sites on other types in the virtual method family are filtered out)
 
-**Behavior:** Without a position and with several same-named declarations in the file, returns an error listing the candidates (FQN + line:col) — no blind first match. Returns **1-based line:column** per reference, grouped by file.
+**Behavior:** Without a position and with several same-named declarations in the file, returns an error listing the candidates (FQN + line:col) — no blind first match. Returns **1-based line:column** per reference, grouped by file. For a virtual/override/abstract method Roslyn reports every call site in the virtual method family (any override, any receiver type — the same as VS 2022 "Find All References"): by default the result notes how many are virtual dispatch sites; `directOnly: true` keeps only direct references.
 </details>
 
 <details>
@@ -975,8 +976,9 @@ cd D:\Devel\YourApp
 - `symbolName: string?` — имя объявления (class/interface/method/property/field/event/constructor); игнорируется, если заданы `line`/`column`
 - `line: int?` / `column: int?` — 1-based позиция на объявлении *или* на usage (вместе) — точный выбор символа
 - `maxResults: int?`, `preview: bool?`
+- `directOnly: bool = false` — только для virtual/override/abstract методов: оставляет только ссылки, где статический тип receiver'а — declaring type или его наследник (virtual dispatch sites на других типах семейства отфильтровываются)
 
-**Поведение:** без позиции и при нескольких одноимённых декларациях в файле — ошибка со списком кандидатов (FQN + line:col), «первый выиграл» не используется. Возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам.
+**Поведение:** без позиции и при нескольких одноимённых декларациях в файле — ошибка со списком кандидатов (FQN + line:col), «первый выиграл» не используется. Возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам. Для virtual/override/abstract методов Roslyn возвращает все точки вызова в виртуальном семействе (любой override, любой тип receiver'а — как в VS 2022 «Find All References»): по умолчанию в выводе указывается, сколько ссылок — virtual dispatch sites; `directOnly: true` оставляет только прямые ссылки.
 </details>
 
 <details>
