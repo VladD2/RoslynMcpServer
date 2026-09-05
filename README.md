@@ -123,6 +123,7 @@ Tracks MCP tools relevant to [`AGENTS.md.sample`](AGENTS.md.sample) (copy into a
 
 ### v1.4.0
 
+- **`find_symbol_definition` / `find_symbol_references` — `filePath` is optional; `find_usages` removed (41 tools)** — `filePath` is now optional in both tools. Without `filePath` they search by `symbolName` across the whole loaded solution (case-insensitive; a dotted name is an exact FQN): `find_symbol_definition` lists all matching **declarations** (one → the standard definition format, several → a summary table FQN + file + line:col, none → "no declarations"); `find_symbol_references` reports **all references** of every matching declaration — the behavior and output format of the former `find_usages` (summary table grouped by FQN with the `First` column). `line`/`column` (and `directOnly` for references) without `filePath` are validation errors. Positional mode (with `filePath`) is unchanged. `find_usages` is gone — tool count 42 → 41.
 - **Workspace prewarm at server start** — when `workspace-path` is set in `RoslynMcp.jsonc`, the workspace load now starts **in the background right after the MCP server starts** (the stdio transport still answers instantly; `get_mcp_server_info` reports "loading in the background"). By the time the agent issues its first `find_*` / `load_workspace` call the load is usually already done — "opening" the project no longer blocks for the full load time; a first semantic call mid-prewarm simply waits for the in-flight load (no double load). A failed prewarm keeps the lazy-load contract: a logged warning and the "no active workspace" guidance on the next semantic call.
 
 ### v1.3.1
@@ -304,18 +305,18 @@ Policy summary (full text in the sample):
 ## Reference: MCP Tools
 
 **Parameter Naming Rules:**
-- `filePath` — a single `.cs` file (semantic/navigation/AST edit).
+- `filePath` — a single `.cs` file (semantic/navigation/AST edit); optional in `find_symbol_definition` / `find_symbol_references` (omitted = name-based solution-wide search).
 - `path` — a `.cs` file or directory for `get_code_skeleton` (absolute path; disk-based, no workspace required).
 - `includeExtensions` — optional extension filter for `search_code` (`.cs` by default; `*` = all files).
 - `caseSensitive` — optional for `search_code` (default `false`; use `true` for leftover branding checks).
 - `workspacePath` — `.sln` / `.slnx` / `.csproj` (and sometimes a directory): `run_dotnet_test`, `run_specific_test`, `run_format`, `list_nuget_packages`, `run_nuget_audit`, `list_outdated_packages`, optional reload for `list_projects` / `get_project_graph`. **`run_dotnet_build` / `run_dotnet_run` accept only a `.csproj`, `.sln`, or `.slnx` file path, not a directory.** Prefer `.sln`/`.slnx` for multi-config solutions.
-- `symbolName` — C# identifier for `find_symbol_definition`, `find_symbol_references`, `find_usages`, and `find_implementations`. For `find_usages`/`find_implementations` it is a name/FQN (case-insensitive); for `find_symbol_definition`/`find_symbol_references` it locates the token on `line` when `column` is omitted.
+- `symbolName` — C# identifier for `find_symbol_definition`, `find_symbol_references`, and `find_implementations`. For `find_implementations` it is a name/FQN (case-insensitive); in `find_symbol_definition`/`find_symbol_references` it is a name/FQN when `filePath` is omitted (solution-wide search), and it locates the token on `line` when `column` is omitted (with `filePath`).
 - `diagnosticId` — compiler/analyzer id from `get_diagnostics_for_file` (e.g. `CS0246`) for `get_code_fixes` / `apply_code_fix`.
 - `fixIndex` — 0-based index from `get_code_fixes` for `apply_code_fix`.
 
 When a tool accepts `filePath`, relative values are resolved against the loaded workspace root; if no workspace is loaded, the fallback is `Environment.CurrentDirectory`. The workspace is taken from the `RoslynMcp.jsonc` config (`workspace-path`) and loaded **lazily** — the first semantic call after server start can take minutes (set the host MCP `timeout` to ≥ 600000 ms).
 
-There are **42** registered tools (see list below) and **1** MCP prompt (`RefactoringAssistantPrompt`).
+There are **41** registered tools (see list below) and **1** MCP prompt (`RefactoringAssistantPrompt`).
 
 ### Workspace
 
@@ -352,38 +353,28 @@ There are **42** registered tools (see list below) and **1** MCP prompt (`Refact
 ### Semantics / Navigation
 
 <details>
-<summary><code>find_symbol_definition</code> — Where a symbol is defined, resolved at a 1-based position in a `.cs` file (FQN + file:line:col; the definition may be in another file).</summary>
+<summary><code>find_symbol_definition</code> — Where a symbol is defined: by name (solution-wide declarations) or at a 1-based position in a `.cs` file (FQN + file:line:col; the definition may be in another file).</summary>
 
 **Parameters:**
-- `filePath: string` — the `.cs` file to resolve in.
-- `symbolName: string?` — the identifier to locate on `line` when `column` is omitted.
-- `line: int?`, `column: int?` — 1-based position (declaration or usage); `column` may be omitted (computed from `symbolName`).
+- `filePath: string?` — the `.cs` file to resolve in. **Optional:** when omitted, all declarations matching `symbolName` across the whole solution are listed.
+- `symbolName: string?` — the identifier (a name with `.` is an exact FQN). Required when `filePath` is omitted; otherwise used to locate the token on `line` when `column` is omitted.
+- `line: int?`, `column: int?` — 1-based position (declaration or usage); `column` may be omitted (computed from `symbolName`). Requires `filePath`.
 - `maxResults: int?`, `preview: bool?`
 
-**Behavior:** Pass `filePath` + `line`; when `column` is omitted it is computed from the first occurrence of `symbolName` on that line. The symbol at that position (a usage *or* a declaration) is resolved and its **definition** is reported — the symbol display string, **fully-qualified name (FQN)**, and **1-based file:line:col** (possibly in another file). Without a position, `symbolName` is matched against declarations in the file; if several share the name, the error lists the candidates (FQN + line:col). Do **not** answer “where is X **declared**?” with plain-text search or shell `grep`/`findstr`/`Select-String`. For all usages across the solution use `find_usages`.
+**Behavior:** Two modes. **Without `filePath`** — lists every declaration in the loaded solution whose name matches `symbolName` (case-insensitive; dotted name = exact FQN): one declaration → the standard definition format, several → a summary table (FQN + file + line:col), none → "no declarations". **With `filePath`** — pass `line` (+ optional `column`, computed from the first occurrence of `symbolName` on that line when omitted) on a usage *or* a declaration; the symbol at that position is resolved and its **definition** is reported — the symbol display string, **fully-qualified name (FQN)**, and **1-based file:line:col** (possibly in another file). Without a position, `symbolName` is matched against declarations in the file; if several share the name, the error lists the candidates (FQN + line:col). Do **not** answer “where is X **declared**?” with plain-text search or shell `grep`/`findstr`/`Select-String`. For all usages across the solution use `find_symbol_references` (by name or by position).
 </details>
 
 <details>
-<summary><code>find_usages</code> — Solution-wide references for a declared name: file, 1-based line:col (and optional line text).</summary>
+<summary><code>find_symbol_references</code> — All references to a symbol: by name (solution-wide) or in a known declaring `.cs` file.</summary>
 
 **Parameters:**
-- `symbolName: string` — declared name of the type or member, or an exact FQN.
+- `filePath: string?` — the declaring `.cs` file. **Optional:** when omitted, all references of every declaration matching `symbolName` across the whole solution are reported.
+- `symbolName: string?` — declaration name (class/interface/method/property/field/event/constructor; a name with `.` is an exact FQN). Required when `filePath` is omitted; otherwise used to locate the token on `line` when `column` is omitted
+- `line: int?` / `column: int?` — 1-based position on the declaration *or* a usage — selects the exact symbol. Requires `filePath`
 - `maxResults: int?`, `preview: bool?`
+- `directOnly: bool = false` — only with `filePath`, for virtual/override/abstract methods: keeps only references whose static receiver type is the declaring type or a derived type (virtual dispatch sites on other types in the virtual method family are filtered out)
 
-**Behavior:** Applies saved `.cs` from disk first. Returns **1-based line:column** per reference, grouped by file. A `symbolName` containing `.` is an exact FQN (no fallback). If several declarations share a name, all are reported (a summary table groups references by FQN, with a `First` line:col column); narrow the name or pass an FQN to disambiguate. FQN does not distinguish method overloads (all overloads with the same name in the same type are reported); to select one overload use 1-based `line`/`column` in `find_symbol_references` or `rename_symbol`. By default only positions are returned (no line text); pass `preview=true` for the source line text.
-</details>
-
-<details>
-<summary><code>find_symbol_references</code> — Finds usages of a class/interface/method when you know the declaring `.cs` file.</summary>
-
-**Parameters:**
-- `filePath: string`
-- `symbolName: string?` — declaration name (class/interface/method/property/field/event/constructor); ignored when `line`/`column` are provided
-- `line: int?` / `column: int?` — 1-based position on the declaration *or* a usage (both required together) — selects the exact symbol
-- `maxResults: int?`, `preview: bool?`
-- `directOnly: bool = false` — for virtual/override/abstract methods only: keeps only references whose static receiver type is the declaring type or a derived type (virtual dispatch sites on other types in the virtual method family are filtered out)
-
-**Behavior:** Without a position and with several same-named declarations in the file, returns an error listing the candidates (FQN + line:col) — no blind first match. Returns **1-based line:column** per reference, grouped by file. For a virtual/override/abstract method Roslyn reports every call site in the virtual method family (any override, any receiver type — the same as VS 2022 "Find All References"): by default the result notes how many are virtual dispatch sites; `directOnly: true` keeps only direct references.
+**Behavior:** Two modes. **Without `filePath`** — applies saved `.cs` from disk first and returns **1-based line:column** per reference, grouped by file, for every declaration matching `symbolName` (case-insensitive; dotted name = exact FQN, no fallback). If several declarations share a name, all are reported (a summary table groups references by FQN, with a `First` line:col column); narrow the name or pass an FQN to disambiguate. FQN does not distinguish method overloads (all overloads with the same name in the same type are reported); to select one overload use 1-based `line`/`column` in `find_symbol_references` or `rename_symbol`. By default only positions are returned (no line text); pass `preview=true` for the source line text. **With `filePath`** — file-scoped SymbolFinder; without a position and with several same-named declarations in the file, returns an error listing the candidates (FQN + line:col) — no blind first match. For a virtual/override/abstract method Roslyn reports every call site in the virtual method family (any override, any receiver type — the same as VS 2022 "Find All References"): by default the result notes how many are virtual dispatch sites; `directOnly: true` keeps only direct references.
 </details>
 
 <details>
@@ -394,7 +385,7 @@ There are **42** registered tools (see list below) and **1** MCP prompt (`Refact
 - `transitive: bool = true` — when `true`, includes indirect implementations / derived types in the hierarchy
 - `maxResults: int?`, `preview: bool?`
 
-**Behavior:** For **interfaces** uses Roslyn `FindImplementationsAsync`; for **classes/structs** uses `FindDerivedClassesAsync`. Each result is reported as `path:line:col`. Do not use text search or `find_usages` for “who implements X?” / “what inherits from Y?”.
+**Behavior:** For **interfaces** uses Roslyn `FindImplementationsAsync`; for **classes/structs** uses `FindDerivedClassesAsync`. Each result is reported as `path:line:col`. Do not use text search or `find_symbol_references` for “who implements X?” / “what inherits from Y?”.
 </details>
 
 <details>
@@ -759,7 +750,7 @@ When the number of matches exceeds the cap, the full result (same markdown forma
 
 **Parameters:** *(none)*
 
-Use after `dotnet publish` to verify the MCP host picked up the new binary (expect **42** tools).
+Use after `dotnet publish` to verify the MCP host picked up the new binary (expect **41** tools).
 </details>
 
 <details>
@@ -884,7 +875,7 @@ cd D:\Devel\YourApp
 - workspace — из `RoslynMcp.jsonc` (`workspace-path`), ленивая загрузка; первый вызов после старта — минуты; `reload` после build / `.csproj`
 - нет target `Compile` при load — повторить с `targetFramework` (inner TFM); это не SDK mismatch
 - VS 2026 BuildHost / `XMakeElements` — это не SDK mismatch; нужен MCP 1.0.35+ или один SDK-style `.csproj`
-- C# объявления — MCP `find_symbol_definition` / `find_usages`, не текстовый поиск и не выдуманный `search`
+- C# объявления — MCP `find_symbol_definition` / `find_symbol_references`, не текстовый поиск и не выдуманный `search`
 - текст по файлам — host Grep IDE, не shell grep
 - сборка/тесты — только MCP `run_dotnet_build` / `run_dotnet_test`
 - чтение/запись файлов — host `read`/`write`/`edit`; правки AST (члены, тела методов, usings) — MCP `add_member` / `update_method_body` / `organize_usings` / `implement_interface` / `extract_interface`
@@ -899,18 +890,18 @@ cd D:\Devel\YourApp
 ## Reference: MCP Tools
 
 **Имена параметров в JSON:**
-- `filePath` — один `.cs` файл (семантика/навигация/правки AST).
+- `filePath` — один `.cs` файл (семантика/навигация/правки AST); опционален в `find_symbol_definition` / `find_symbol_references` (без него — поиск по имени по всему solution).
 - `path` — файл `.cs` или каталог для `get_code_skeleton` (абсолютный путь; с диска, workspace не обязателен).
 - `includeExtensions` — опциональный фильтр расширений для `search_code` (по умолчанию `.cs`; `*` = все файлы).
 - `caseSensitive` — опционально для `search_code` (по умолчанию `false`; для leftover branding — `true`).
 - `workspacePath` — `.sln` / `.slnx` / `.csproj` (и иногда каталог): `run_dotnet_test`, `run_specific_test`, `run_format`, `list_nuget_packages`, `run_nuget_audit`, `list_outdated_packages`, опциональная перезагрузка в `list_projects` / `get_project_graph`. **`run_dotnet_build` / `run_dotnet_run` принимают только путь к файлу `.csproj`, `.sln` или `.slnx`, не каталог.** Для multi-config solution предпочитайте `.sln`/`.slnx`.
-- `symbolName` — идентификатор C# для `find_symbol_definition`, `find_symbol_references`, `find_usages` и `find_implementations`. Для `find_usages`/`find_implementations` — имя/FQN (регистр не важен); для `find_symbol_definition`/`find_symbol_references` — находит токен на строке `line`, когда не задан `column`.
+- `symbolName` — идентификатор C# для `find_symbol_definition`, `find_symbol_references` и `find_implementations`. Для `find_implementations` — имя/FQN (регистр не важен); в `find_symbol_definition`/`find_symbol_references` — имя/FQN, когда `filePath` не задан (поиск по всему solution), и находит токен на строке `line`, когда не задан `column` (с `filePath`).
 - `diagnosticId` — id компилятора/анализатора из `get_diagnostics_for_file` (например `CS0246`) для `get_code_fixes` / `apply_code_fix`.
 - `fixIndex` — индекс (0-based) из `get_code_fixes` для `apply_code_fix`.
 
 Когда tool принимает `filePath`, относительные значения резолвятся относительно корня загруженного workspace; если workspace не загружен — `Environment.CurrentDirectory`. Workspace берётся из конфига `RoslynMcp.jsonc` (`workspace-path`) и грузится **лениво** — первый семантический вызов после старта может занять минуты (поднимите host MCP `timeout` до ≥ 600000 мс).
 
-Зарегистрировано **42** инструмента (список ниже) и **1** MCP-промпт (`RefactoringAssistantPrompt`).
+Зарегистрировано **41** инструмент (список ниже) и **1** MCP-промпт (`RefactoringAssistantPrompt`).
 
 ### Workspace
 
@@ -947,38 +938,28 @@ cd D:\Devel\YourApp
 ### Семантика / Навигация
 
 <details>
-<summary><code>find_symbol_definition</code> — Где определён символ, резолвится по 1-based позиции в файле `.cs` (FQN + file:line:col; определение может быть в другом файле).</summary>
+<summary><code>find_symbol_definition</code> — Где определён символ: по имени (декларации по всему solution) или по 1-based позиции в файле `.cs` (FQN + file:line:col; определение может быть в другом файле).</summary>
 
 **Параметры:**
-- `filePath: string` — файл `.cs`, в котором резолвить.
-- `symbolName: string?` — идентификатор для поиска на строке `line`, когда не задан `column`.
-- `line: int?`, `column: int?` — 1-based позиция (объявление или использование); `column` можно опустить (вычисляется из `symbolName`).
+- `filePath: string?` — файл `.cs`, в котором резолвить. **Опционален:** если не задан — выводится список всех деклараций, совпадающих с `symbolName`, по всему solution.
+- `symbolName: string?` — идентификатор (имя с `.` — точный FQN). Обязателен, когда `filePath` не задан; иначе используется для поиска токена на `line`, когда не задан `column`.
+- `line: int?`, `column: int?` — 1-based позиция (объявление или использование); `column` можно опустить (вычисляется из `symbolName`). Требуют `filePath`.
 - `maxResults: int?`, `preview: bool?`
 
-**Поведение:** передай `filePath` + `line`; когда `column` не задан, он вычисляется из первого вхождения `symbolName` на этой строке. Символ в этой позиции (использование *или* объявление) резолвится и выводится его **определение** — display-строка, **полное имя (FQN)** и **1-based file:line:col** (возможно в другом файле). Без позиции `symbolName` ищется среди объявлений в файле; если совпало несколько — ошибка перечисляет кандидатов (FQN + line:col). Для «где **объявлен** X?» не используй текстовый поиск и не `grep`/`findstr`/`Select-String` из терминала. Для всех использований по solution — `find_usages`.
+**Поведение:** два режима. **Без `filePath`** — список всех деклараций загруженного solution, совпадающих с `symbolName` (регистр не важен; имя с `.` — точный FQN): одна декларация — стандартный формат определения, несколько — сводная таблица (FQN + файл + line:col), ни одной — «декларации не найдены». **С `filePath`** — передай `line` (+ опционально `column`, вычисляется из первого вхождения `symbolName` на этой строке, когда не задан) на использовании *или* объявлении; символ в этой позиции резолвится и выводится его **определение** — display-строка, **полное имя (FQN)** и **1-based file:line:col** (возможно в другом файле). Без позиции `symbolName` ищется среди объявлений в файле; если совпало несколько — ошибка перечисляет кандидатов (FQN + line:col). Для «где **объявлен** X?» не используй текстовый поиск и не `grep`/`findstr`/`Select-String` из терминала. Для всех использований по solution — `find_symbol_references` (по имени или по позиции).
 </details>
 
 <details>
-<summary><code>find_usages</code> — Ссылки по всему solution: файл, 1-based line:col (и опционально текст строки).</summary>
+<summary><code>find_symbol_references</code> — Все ссылки на символ: по имени (по всему solution) или в известном файле объявления `.cs`.</summary>
 
 **Параметры:**
-- `symbolName: string` — объявленное имя типа или члена, либо точный FQN.
+- `filePath: string?` — файл объявления. **Опционален:** если не задан — выводятся все ссылки на каждую декларацию, совпадающую с `symbolName`, по всему solution.
+- `symbolName: string?` — имя объявления (class/interface/method/property/field/event/constructor; имя с `.` — точный FQN). Обязателен, когда `filePath` не задан; иначе используется для поиска токена на `line`, когда не задан `column`
+- `line: int?` / `column: int?` — 1-based позиция на объявлении *или* на usage — точный выбор символа. Требуют `filePath`
 - `maxResults: int?`, `preview: bool?`
+- `directOnly: bool = false` — только с `filePath`, для virtual/override/abstract методов: оставляет только ссылки, где статический тип receiver'а — declaring type или его наследник (virtual dispatch sites на других типах семейства отфильтровываются)
 
-**Поведение:** сначала подмешиваются сохранённые `.cs` с диска. Возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам. `symbolName` с `.` — точный FQN (без fallback). Если несколько одноимённых символов — выводятся все (сводная таблица группирует ссылки по FQN, со столбцом `First` line:col); сузьте имя или передайте FQN. FQN не различает перегрузки метода (выдаются все перегрузки с одним именем в одном типе); чтобы выбрать одну — 1-based `line`/`column` в `find_symbol_references` или `rename_symbol`. По умолчанию только позиции; `preview=true` добавляет текст строки.
-</details>
-
-<details>
-<summary><code>find_symbol_references</code> — Ищет использования класса/интерфейса/метода, когда известен файл объявления.</summary>
-
-**Параметры:**
-- `filePath: string`
-- `symbolName: string?` — имя объявления (class/interface/method/property/field/event/constructor); игнорируется, если заданы `line`/`column`
-- `line: int?` / `column: int?` — 1-based позиция на объявлении *или* на usage (вместе) — точный выбор символа
-- `maxResults: int?`, `preview: bool?`
-- `directOnly: bool = false` — только для virtual/override/abstract методов: оставляет только ссылки, где статический тип receiver'а — declaring type или его наследник (virtual dispatch sites на других типах семейства отфильтровываются)
-
-**Поведение:** без позиции и при нескольких одноимённых декларациях в файле — ошибка со списком кандидатов (FQN + line:col), «первый выиграл» не используется. Возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам. Для virtual/override/abstract методов Roslyn возвращает все точки вызова в виртуальном семействе (любой override, любой тип receiver'а — как в VS 2022 «Find All References»): по умолчанию в выводе указывается, сколько ссылок — virtual dispatch sites; `directOnly: true` оставляет только прямые ссылки.
+**Поведение:** два режима. **Без `filePath`** — сначала подмешиваются сохранённые `.cs` с диска; возвращает **1-based line:column** для каждой ссылки, сгруппировано по файлам, на каждую декларацию, совпадающую с `symbolName` (регистр не важен; имя с `.` — точный FQN, без fallback). Если несколько одноимённых деклараций — выводятся все (сводная таблица группирует ссылки по FQN, со столбцом `First` line:col); сузьте имя или передайте FQN. FQN не различает перегрузки метода (выдаются все перегрузки с одним именем в одном типе); чтобы выбрать одну — 1-based `line`/`column` в `find_symbol_references` или `rename_symbol`. По умолчанию только позиции; `preview=true` добавляет текст строки. **С `filePath`** — file-scoped SymbolFinder; без позиции и при нескольких одноимённых декларациях в файле — ошибка со списком кандидатов (FQN + line:col), «первый выиграл» не используется. Для virtual/override/abstract методов Roslyn возвращает все точки вызова в виртуальном семействе (любой override, любой тип receiver'а — как в VS 2022 «Find All References»): по умолчанию в выводе указывается, сколько ссылок — virtual dispatch sites; `directOnly: true` оставляет только прямые ссылки.
 </details>
 
 <details>
@@ -989,7 +970,7 @@ cd D:\Devel\YourApp
 - `transitive: bool = true` — при `true` включает косвенные реализации / наследников по иерархии
 - `maxResults: int?`, `preview: bool?`
 
-**Поведение:** для **интерфейсов** — Roslyn `FindImplementationsAsync`; для **классов/struct** — `FindDerivedClassesAsync`. Каждый результат — `path:line:col`. Не используйте текстовый поиск или `find_usages` для «кто реализует X?» / «кто наследует Y?».
+**Поведение:** для **интерфейсов** — Roslyn `FindImplementationsAsync`; для **классов/struct** — `FindDerivedClassesAsync`. Каждый результат — `path:line:col`. Не используйте текстовый поиск или `find_symbol_references` для «кто реализует X?» / «кто наследует Y?».
 </details>
 
 <details>
@@ -1343,7 +1324,7 @@ cd D:\Devel\YourApp
 
 **Параметры:** *(нет)*
 
-После `dotnet publish` — проверка, что MCP подхватил новый бинарник (ожидай **42** tools).
+После `dotnet publish` — проверка, что MCP подхватил новый бинарник (ожидай **41** tools).
 </details>
 
 <details>
