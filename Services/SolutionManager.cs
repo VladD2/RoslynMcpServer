@@ -265,7 +265,7 @@ public sealed class SolutionManager
     /// stubs removed (<see cref="WorkspaceAnalyzerSanitizer"/>), cached per raw-solution instance.
     /// Solution-wide SymbolFinder searches must use this: Roslyn 5.9.0 throws
     /// <c>InvalidOperationException</c> computing a project checksum that contains an unresolved analyzer stub,
-    /// which breaks <c>find_usages</c> / <c>find_symbol_references</c> / <c>get_call_graph</c> /
+    /// which breaks <c>find_symbol_references</c> / <c>find_symbol_definition</c> / <c>get_call_graph</c> /
     /// <c>find_implementations</c> for the whole solution.
     /// A clean solution is returned as-is (no new <see cref="Solution"/> is allocated).
     /// </summary>

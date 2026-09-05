@@ -4,14 +4,14 @@ namespace RoslynMcpServer.Tests;
 
 /// <summary>
 /// Regression for the FastGlobGrep case (plan §3.4): when several declarations share a simple name,
-/// <c>find_usages</c> must report all of them — a summary table plus per-FQN sections with references
-/// grouped by fully-qualified name — instead of blindly picking a "primary" symbol and dumping the rest
-/// under "Other candidates". A single declaration keeps the plain (table-less) format.
-/// Two same-named <em>types</em> in different namespaces are used so the FQNs are distinct
-/// (<c>global::Ns1.FastGlobGrep</c> vs <c>global::Ns2.FastGlobGrep</c>); an unused type yields exactly 0
-/// references (a type's own declaration is not counted as a reference by <c>SymbolFinder</c>).
+/// <c>find_symbol_references</c> without <c>filePath</c> (the former <c>find_usages</c>) must report all of
+/// them — a summary table plus per-FQN sections with references grouped by fully-qualified name — instead of
+/// blindly picking a "primary" symbol and dumping the rest under "Other candidates". A single declaration
+/// keeps the plain (table-less) format. Two same-named <em>types</em> in different namespaces are used so the
+/// FQNs are distinct (<c>global::Ns1.FastGlobGrep</c> vs <c>global::Ns2.FastGlobGrep</c>); an unused type
+/// yields exactly 0 references (a type's own declaration is not counted as a reference by <c>SymbolFinder</c>).
 /// </summary>
-public sealed class FindUsagesGroupingTests
+public sealed class FindSymbolReferencesGroupingTests
 {
     // Ns1.FastGlobGrep is referenced twice (12:25, 13:25); Ns2.FastGlobGrep is never referenced.
     private const string TwoDeclarationsSource = """
@@ -62,11 +62,11 @@ public sealed class FindUsagesGroupingTests
         """;
 
     [Fact]
-    public async Task FindUsages_two_declarations_produces_fqn_table_and_grouped_sections()
+    public async Task FindSymbolReferences_nameOnly_two_declarations_produces_fqn_table_and_grouped_sections()
     {
         using var search = AdhocSearchTool.Create(TwoDeclarationsSource);
 
-        var result = await search.Tool.FindUsages("FastGlobGrep");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "FastGlobGrep");
 
         // Summary table with one row per declaration FQN (the First column disambiguates identical FQNs,
         // e.g. method overloads in the same type).
@@ -128,11 +128,11 @@ public sealed class FindUsagesGroupingTests
         """;
 
     [Fact]
-    public async Task FindUsages_two_same_named_methods_in_different_classes_produce_distinct_fqns()
+    public async Task FindSymbolReferences_nameOnly_two_same_named_methods_in_different_classes_produce_distinct_fqns()
     {
         using var search = AdhocSearchTool.Create(TwoMemberDeclarationsSource);
 
-        var result = await search.Tool.FindUsages("FastGlobGrep");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "FastGlobGrep");
 
         // Table rows include the declaring type (owner), not the bare member name; the First column
         // carries the first reference position.
@@ -158,11 +158,11 @@ public sealed class FindUsagesGroupingTests
         .Count(l => l.StartsWith("- ", StringComparison.Ordinal));
 
     [Fact]
-    public async Task FindUsages_single_declaration_has_no_table()
+    public async Task FindSymbolReferences_nameOnly_single_declaration_has_no_table()
     {
         using var search = AdhocSearchTool.Create(OneDeclarationSource);
 
-        var result = await search.Tool.FindUsages("Widget");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget");
 
         Assert.DoesNotContain("| FQN | References |", result, StringComparison.Ordinal);
         Assert.DoesNotContain("declaration(s) match this name", result, StringComparison.Ordinal);

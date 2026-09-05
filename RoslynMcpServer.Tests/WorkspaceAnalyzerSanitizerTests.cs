@@ -13,7 +13,7 @@ namespace RoslynMcpServer.Tests;
 /// Part 0 tests (plan §0.3): Roslyn 5.9.0 cannot compute a project checksum that contains an
 /// <see cref="UnresolvedAnalyzerReference"/> stub (<c>SerializerService.CreateChecksum</c> throws
 /// <c>InvalidOperationException</c>), which breaks every solution-wide SymbolFinder search that builds the
-/// dependent-type index (find_usages / find_symbol_references / get_call_graph / find_implementations /
+/// dependent-type index (find_symbol_references / find_symbol_definition / get_call_graph / find_implementations /
 /// rename_symbol) for the whole solution. The sanitizer strips the stub; the retry helper covers a stub that
 /// appears after the last sanitization pass.
 /// </summary>

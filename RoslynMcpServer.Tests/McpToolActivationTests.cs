@@ -68,16 +68,17 @@ public sealed class McpToolActivationTests
 
     /// <summary>
     /// v1.3.0: the registry holds exactly 42 tools (40 from v1.2.0 + the restored <c>load_workspace</c> /
-    /// <c>reset_workspace</c>), with no duplicate tool names.
+    /// <c>reset_workspace</c>); <c>find_usages</c> was removed in favor of <c>find_symbol_references</c>
+    /// without <c>filePath</c> (41 tools), with no duplicate tool names.
     /// </summary>
     [Fact]
-    public void Registry_contains_exactly_42_distinct_tool_names()
+    public void Registry_contains_exactly_41_distinct_tool_names()
     {
         var names = McpToolRegistry.ToolTypes
             .SelectMany(t => GetMcpToolMethodNames(t))
             .ToList();
 
-        Assert.Equal(42, names.Count);
+        Assert.Equal(41, names.Count);
         Assert.Equal(names.Count, names.Distinct(StringComparer.Ordinal).Count());
     }
 

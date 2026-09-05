@@ -38,13 +38,13 @@ public sealed class SearchOverflowTests
     private static string OverflowRoot => Path.Combine(Path.GetTempPath(), "roslyn-mcp");
 
     [Fact]
-    public async Task FindUsages_over_cap_writes_full_result_to_temp_file()
+    public async Task FindSymbolReferences_nameOnly_over_cap_writes_full_result_to_temp_file()
     {
         string? overflowDir = null;
         using var search = AdhocSearchTool.Create(Source);
         try
         {
-            var result = await search.Tool.FindUsages("Widget", maxResults: 2);
+            var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", maxResults: 2);
 
             // Short response: count + path, not the full result.
             Assert.Contains("Found **3** element(s)", result, StringComparison.Ordinal);
@@ -68,7 +68,7 @@ public sealed class SearchOverflowTests
     }
 
     [Fact]
-    public async Task FindUsages_over_cap_from_config_writes_full_result_to_temp_file()
+    public async Task FindSymbolReferences_nameOnly_over_cap_from_config_writes_full_result_to_temp_file()
     {
         var config = new WorkspaceConfig(
             new ConfigurationBuilder()
@@ -83,7 +83,7 @@ public sealed class SearchOverflowTests
         try
         {
             // No maxResults argument — the cap comes from the config `max-results`.
-            var result = await search.Tool.FindUsages("Widget");
+            var result = await search.Tool.FindSymbolReferences(symbolName: "Widget");
 
             Assert.Contains("Found **3** element(s)", result, StringComparison.Ordinal);
             Assert.Contains("exceeding the cap of 2", result, StringComparison.Ordinal);
@@ -103,12 +103,12 @@ public sealed class SearchOverflowTests
     }
 
     [Fact]
-    public async Task FindUsages_under_cap_returns_inline_and_creates_no_file()
+    public async Task FindSymbolReferences_nameOnly_under_cap_returns_inline_and_creates_no_file()
     {
         using var search = AdhocSearchTool.Create(Source);
         var before = SnapshotOverflowDirs();
 
-        var result = await search.Tool.FindUsages("Widget", maxResults: 10);
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", maxResults: 10);
 
         // Inline (non-overflow) output with all positions.
         Assert.DoesNotContain("exceeding the cap", result, StringComparison.Ordinal);

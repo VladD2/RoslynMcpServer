@@ -14,7 +14,7 @@ namespace RoslynMcpServer.Tests;
 /// Builds a <see cref="NavigationTools"/> over an in-memory <see cref="AdhocWorkspace"/> (no MSBuild load),
 /// reusing the pattern from <see cref="FqnResolutionTests"/>: the solution is injected into
 /// <see cref="SolutionManager"/> via reflection so the solution-wide search tools
-/// (find_usages / find_symbol_definition / find_implementations) resolve against it.
+/// (find_symbol_references / find_symbol_definition / find_implementations without filePath) resolve against it.
 /// The source is also written to a unique temp file so documents carry a real file path
 /// (the tools group positions by <c>Document.FilePath</c>).
 /// </summary>

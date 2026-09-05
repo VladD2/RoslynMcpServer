@@ -11,7 +11,7 @@ namespace RoslynMcpServer.Services;
 /// Roslyn 5.9.0 cannot compute a project checksum that contains the stub: <c>SerializerService.CreateChecksum</c>
 /// throws <see cref="InvalidOperationException"/> (<c>Unexpected value 'UnresolvedAnalyzerReference'</c>).
 /// The checksum is computed by <c>DependentTypeFinder</c> for every solution-wide SymbolFinder search that builds
-/// the dependent-type index, so a single stub breaks <c>find_usages</c>, <c>find_symbol_references</c>,
+/// the dependent-type index, so a single stub breaks <c>find_symbol_references</c>, <c>find_symbol_definition</c>,
 /// <c>get_call_graph</c>, <c>find_implementations</c> and <c>rename_symbol</c> for the whole solution,
 /// regardless of which project the searched symbol belongs to.
 /// </para>

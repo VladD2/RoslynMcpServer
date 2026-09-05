@@ -12,9 +12,9 @@ using Xunit;
 namespace RoslynMcpServer.Tests;
 
 /// <summary>
-/// FQN input for find_usages / find_symbol_definition / find_implementations (plan §3.3): a name containing
-/// a dot is an exact FQN match (Ordinal); when it matches nothing the error lists the candidate FQNs and there
-/// is no silent fallback to the simple name.
+/// FQN input for find_symbol_references (name-based) / find_symbol_definition / find_implementations
+/// (plan §3.3): a name containing a dot is an exact FQN match (Ordinal); when it matches nothing the error
+/// lists the candidate FQNs and there is no silent fallback to the simple name.
 /// Note: <see cref="SymbolDisplayFormat.FullyQualifiedFormat"/> includes the <c>global::</c> prefix for top-level
 /// types (GlobalNamespaceStyle.Included), so both FQN forms are accepted: with the prefix
 /// (<c>global::Ns1.Guard</c> — the same string the tools print in their output) and without it
@@ -118,22 +118,22 @@ public sealed class FqnResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task FindUsages_fqn_selects_exact_declaration_only()
+    public async Task FindSymbolReferences_nameOnly_fqn_selects_exact_declaration_only()
     {
         var tool = CreateTool();
 
-        var result = await tool.FindUsages("global::Ns1.Guard");
+        var result = await tool.FindSymbolReferences(symbolName: "global::Ns1.Guard");
 
         Assert.Contains("`global::Ns1.Guard`", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.Guard", result, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task FindUsages_fqn_not_found_lists_candidates_without_fallback()
+    public async Task FindSymbolReferences_nameOnly_fqn_not_found_lists_candidates_without_fallback()
     {
         var tool = CreateTool();
 
-        var result = await tool.FindUsages("Ns9.Guard");
+        var result = await tool.FindSymbolReferences(symbolName: "Ns9.Guard");
 
         Assert.Contains("FQN `Ns9.Guard` was not found", result, StringComparison.Ordinal);
         Assert.Contains("simple name `Guard`", result, StringComparison.Ordinal);
@@ -143,11 +143,11 @@ public sealed class FqnResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task FindUsages_simple_name_still_reports_all_declarations()
+    public async Task FindSymbolReferences_nameOnly_simple_name_still_reports_all_declarations()
     {
         var tool = CreateTool();
 
-        var result = await tool.FindUsages("Guard");
+        var result = await tool.FindSymbolReferences(symbolName: "Guard");
 
         Assert.Contains("Ns1.Guard", result, StringComparison.Ordinal);
         Assert.Contains("Ns2.Guard", result, StringComparison.Ordinal);
@@ -177,22 +177,22 @@ public sealed class FqnResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task FindUsages_member_fqn_selects_exact_method_only()
+    public async Task FindSymbolReferences_nameOnly_member_fqn_selects_exact_method_only()
     {
         var tool = CreateTool();
 
-        var result = await tool.FindUsages("Ns1.Guard.Run");
+        var result = await tool.FindSymbolReferences(symbolName: "Ns1.Guard.Run");
 
         Assert.Contains("`global::Ns1.Guard.Run`", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.Guard.Run", result, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task FindUsages_member_fqn_not_found_lists_candidates_without_fallback()
+    public async Task FindSymbolReferences_nameOnly_member_fqn_not_found_lists_candidates_without_fallback()
     {
         var tool = CreateTool();
 
-        var result = await tool.FindUsages("Ns9.Guard.Run");
+        var result = await tool.FindSymbolReferences(symbolName: "Ns9.Guard.Run");
 
         Assert.Contains("FQN `Ns9.Guard.Run` was not found", result, StringComparison.Ordinal);
         Assert.Contains("simple name `Run`", result, StringComparison.Ordinal);
@@ -202,11 +202,11 @@ public sealed class FqnResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task FindUsages_fqn_without_global_prefix_resolves()
+    public async Task FindSymbolReferences_nameOnly_fqn_without_global_prefix_resolves()
     {
         var tool = CreateTool();
 
-        var result = await tool.FindUsages("Ns1.Guard");
+        var result = await tool.FindSymbolReferences(symbolName: "Ns1.Guard");
 
         Assert.Contains("`global::Ns1.Guard`", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.Guard", result, StringComparison.Ordinal);

@@ -12,7 +12,7 @@ You are a Senior C# Developer and Architect using Roslyn MCP. Follow the policy 
 
 ## Quick path
 
-1. **Read-only** (where is X?): the workspace is loaded **lazily by default** from `RoslynMcp.jsonc` (`workspace-path`) — no explicit load call is needed (if the config is absent, see `load_workspace` in *Workspace (config)*). The **first** semantic call after server start can take **minutes** (workspace load), so allow for that delay. Then `find_symbol_definition` / `find_usages` / `get_class_skeleton`. Host **Grep** only for plain text (strings, comments, non-C#). Unsaved editor buffers are not in the Roslyn index.
+1. **Read-only** (where is X?): the workspace is loaded **lazily by default** from `RoslynMcp.jsonc` (`workspace-path`) — no explicit load call is needed (if the config is absent, see `load_workspace` in *Workspace (config)*). The **first** semantic call after server start can take **minutes** (workspace load), so allow for that delay. Then `find_symbol_definition` / `find_symbol_references` / `get_class_skeleton`. Host **Grep** only for plain text (strings, comments, non-C#). Unsaved editor buffers are not in the Roslyn index.
 2. **Edit / build / test / run**: full init → MCP `dotnet_*` only (never shell `dotnet build` / `dotnet test`).
 3. **C# identifier** (type, method, extension): **MCP first** — not host Grep / `search_code` as the opening move. Grep is fallback after MCP finds nothing.
 4. **Secrets**: never paste PAT/passwords into chat or commits; env / user-secrets (see Secrets).
@@ -32,7 +32,7 @@ Skip full init for a one-line read-only answer once the workspace is loaded in t
 ## Search (MCP vs host)
 
 - **Never** shell `grep` / `Select-String` / `find`.
-- **C# symbols**: `find_symbol_definition`, `find_usages` (prefer when only name known), `find_symbol_references` (when you know declaring `filePath`). Interfaces/bases → `find_implementations`, not `find_usages`. Pass an exact FQN (or a 1-based `line`/`column` for `find_symbol_references`) to disambiguate overloads.
+- **C# symbols**: `find_symbol_definition` / `find_symbol_references` — by `symbolName` (solution-wide; prefer when only the name is known) or by `filePath` + position (file-scoped). Interfaces/bases → `find_implementations`, not text search. Pass an exact FQN (or a 1-based `line`/`column` for `find_symbol_references`) to disambiguate overloads.
 - **Plain text**: host Grep / SemanticSearch OK; also fallback if MCP has no symbol.
 - Layout: host file tree / host Grep. Leftover branding token checks: `search_code` with `caseSensitive=true` (see Description).
 
@@ -48,7 +48,7 @@ On tool failure: fix args and retry MCP — do not fall back to shell `dotnet`. 
 ## Branding / rename (hybrid)
 
 1. `reload` (or config `workspace-path`) on the real `.sln`/`.slnx` — lazily, first call may take minutes
-2. `rename_symbol` / `find_usages` for **C# symbols only**
+2. `rename_symbol` / `find_symbol_references` for **C# symbols only**
 3. `rename_project` (`dryRun=true` first) for folder / `.csproj` / refs / solution entries
 4. Host Grep/edit for README, rules, URLs, Docker, CI
 5. `reload` → `run_dotnet_build` / `run_dotnet_test`
@@ -60,7 +60,7 @@ Do not mix `get_code_skeleton(path=…)` (disk `.cs`) with decompile tools (`ass
 - **File read/write/edit:** use the **host tools** (`read` / `write` / `edit` / `bash` / `git`) — MCP no longer owns full-file read/write or patch.
 - **C# AST edits:** use MCP `add_member` (insert method/property/field), `update_method_body`, `organize_usings`, `implement_interface`, `extract_interface` — for syntax-safe, region-aware changes.
 - **Refactor:** `rename_symbol` with `previewOnly=true` first (not project folders).
-- After MCP server rebuild: `get_mcp_server_info` (expect **40** tools).
+- After MCP server rebuild: `get_mcp_server_info` (expect **41** tools).
 - **Saved** `.cs` (host edit/write, git, `dotnet format`) sync into the semantic index automatically; `reload` is for generated `obj` files / project-file graph after build — not for ordinary source saves.
 
 ## Secrets

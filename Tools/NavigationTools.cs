@@ -15,7 +15,7 @@ namespace RoslynMcpServer.Tools;
 
 public sealed class NavigationTools
 {
-    private const int MaxFindUsagesSourceLineChars = 400;
+    private const int MaxSourceLinePreviewChars = 400;
 
     /// <summary>
     /// Appended to a search result when the search had to be retried after re-sanitizing the workspace
@@ -461,197 +461,13 @@ public sealed class NavigationTools
         }
     }
 
-    [McpServerTool(Name = "find_usages", Title = "Find symbol usages across solution")]
-    [Description(
-        "Semantically searches the **entire loaded Roslyn solution** for references and invocations of every symbol whose declared name matches `symbolName` (case-insensitive). "
-        + "Applies **saved** `.cs` from disk first; unsaved editor buffers are ignored. "
-        + "Returns **1-based line:column** for each reference, grouped by file. "
-        + "If several declarations share the same simple name, all of them are reported (a summary table groups references by fully-qualified name); "
-        + "narrow `symbolName` (or pass an FQN) to disambiguate, or use `find_symbol_definition` / `find_symbol_references` with a known file. "
-        + "A `symbolName` containing `.` is treated as a **fully-qualified name (exact match)**; if it matches no declaration, the error lists the candidate FQNs (no fallback to the simple name). "
-        + "FQN does not distinguish method overloads (all overloads with the same name in the same type are reported); to select one overload use 1-based `line`/`column` in `find_symbol_references` or `rename_symbol`. "
-        + "By default: positions only (file:line:col), no line text; pass `preview=true` when you need the source line text. "
-        + "Workspace is taken from the config (`RoslynMcp.jsonc` `workspace-path`) and loaded lazily; the first call after server start can take minutes (workspace load) — the host timeout should be ≥ 600000 ms.")]
-    public async Task<string> FindUsages(
-        [Description("Declared name of the type or member whose references to find (e.g. `Guard`, `JsonExtensions`, `Format`).")]
-        string symbolName,
-        [Description("Cap on the total number of reference positions (argument > config `max-results` > default 50). When exceeded, the full result is written to a temp file.")]
-        int? maxResults = null,
-        [Description("When true, include the trimmed source line text at each reference.")]
-        bool? preview = null,
-        CancellationToken cancellationToken = default)
-    {
-        const string toolName = nameof(FindUsages);
-
-        try
-        {
-            if (string.IsNullOrWhiteSpace(symbolName))
-            {
-                return ToolTelemetry.TraceAndReturn(toolName, "Error: `symbolName` is empty.");
-            }
-
-            var solution = await _solutionManager.GetCurrentSolutionAfterDiskSyncAsync(cancellationToken).ConfigureAwait(false);
-            if (solution is null)
-            {
-                return ToolTelemetry.TraceAndReturn(
-                    toolName,
-                    WorkspaceLoadGuidance.FormatNoWorkspaceLoadedMessage(
-                        "Error: No active workspace.",
-                        _solutionManager.ConfiguredWorkspacePath));
-            }
-
-            var trimmedName = symbolName.Trim();
-            var (symbols, fqnError) = await ResolveDeclarationsAsync(
-                solution, trimmedName, SymbolFilter.Type | SymbolFilter.Member, cancellationToken).ConfigureAwait(false);
-            if (fqnError is not null)
-            {
-                return ToolTelemetry.TraceAndReturn(
-                    toolName,
-                    _solutionManager.WithDiskSyncNotes(fqnError));
-            }
-
-            if (symbols.Count == 0)
-            {
-                return ToolTelemetry.TraceAndReturn(
-                    toolName,
-                    _solutionManager.WithDiskSyncNotes(
-                        $"No declarations named `{trimmedName}` were found in the current solution."));
-            }
-
-            var showPreview = ResolvePreview(preview);
-            var cap = ResolveMaxResults(maxResults);
-
-            // Find references for every matching declaration (no blind "primary" pick).
-            var perSymbol = new List<(ISymbol Symbol, List<ReferenceLocation> Locations)>();
-            var analyzerRetry = false;
-            foreach (var symbol in symbols)
-            {
-                var (references, retried) = await WorkspaceAnalyzerSanitizer.WithSanitizedRetryAsync(
-                    sol => SymbolFinder.FindReferencesAsync(symbol, sol, cancellationToken),
-                    _solutionManager.GetSanitizedSolution,
-                    solution,
-                    cancellationToken).ConfigureAwait(false);
-                analyzerRetry |= retried;
-                var locations = references
-                    .SelectMany(r => r.Locations)
-                    .Where(l => l.Location.IsInSource && l.Document.FilePath is not null)
-                    .OrderBy(l => l.Document.FilePath, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(l => l.Location.GetLineSpan().StartLinePosition.Line)
-                    .ThenBy(l => l.Location.SourceSpan.Start)
-                    .ToList();
-                perSymbol.Add((symbol, locations));
-            }
-
-            var totalPositions = perSymbol.Sum(p => p.Locations.Count);
-            var docByPath = BuildDocumentByPathMap(solution);
-            var textByDocument = new Dictionary<DocumentId, SourceText>();
-
-            var sb = new StringBuilder();
-            sb.AppendLine($"## Usages for `{trimmedName}` (identifier length: {trimmedName.Length})");
-            sb.AppendLine();
-
-            string summary;
-            if (perSymbol.Count == 1)
-            {
-                var (symbol, locations) = perSymbol[0];
-                sb.AppendLine($"**Symbol:** `{symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}`");
-                sb.AppendLine($"`{GetSymbolFqn(symbol)}`");
-                sb.AppendLine();
-
-                if (locations.Count == 0)
-                {
-                    sb.AppendLine("No in-source references were returned for this symbol.");
-                }
-                else
-                {
-                    sb.AppendLine($"Found **{locations.Count}** reference location(s).");
-                    sb.AppendLine();
-                    await AppendPositionGroupsAsync(
-                        sb, locations, showPreview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
-                }
-
-                summary = BuildFileListSummary(locations.Select(l => l.Document.FilePath));
-            }
-            else
-            {
-                var ordered = perSymbol
-                    .OrderBy(p => GetSymbolFqn(p.Symbol), StringComparer.Ordinal)
-                    .ToList();
-
-                sb.AppendLine($"{ordered.Count} declaration(s) match this name:");
-                sb.AppendLine();
-                sb.AppendLine("| FQN | References | First |");
-                sb.AppendLine("| --- | --- | --- |");
-                foreach (var (symbol, locations) in ordered)
-                {
-                    string firstPosition;
-                    if (locations.Count == 0)
-                    {
-                        firstPosition = "—";
-                    }
-                    else
-                    {
-                        var firstPos = locations[0].Location.GetLineSpan().StartLinePosition;
-                        firstPosition = $"{firstPos.Line + 1}:{firstPos.Character + 1}";
-                    }
-
-                    sb.AppendLine($"| {GetSymbolFqn(symbol)} | {locations.Count} | {firstPosition} |");
-                }
-
-                sb.AppendLine();
-                foreach (var (symbol, locations) in ordered)
-                {
-                    sb.AppendLine($"### `{GetSymbolFqn(symbol)}`");
-                    sb.AppendLine();
-                    if (locations.Count == 0)
-                    {
-                        sb.AppendLine("(no in-source references)");
-                        sb.AppendLine();
-                    }
-                    else
-                    {
-                        await AppendPositionGroupsAsync(
-                            sb, locations, showPreview, docByPath, textByDocument, cancellationToken).ConfigureAwait(false);
-                    }
-                }
-
-                summary = string.Join(
-                    Environment.NewLine,
-                    ordered.Select(p => $"- {GetSymbolFqn(p.Symbol)}: {p.Locations.Count}"));
-            }
-
-            var fullMarkdown = sb.ToString().TrimEnd();
-            if (analyzerRetry)
-            {
-                fullMarkdown += Environment.NewLine + Environment.NewLine + AnalyzerFallbackNote;
-            }
-
-            return ToolTelemetry.TraceAndReturn(
-                toolName,
-                _solutionManager.WithDiskSyncNotes(
-                    SearchOverflowHelper.CapOrWriteToTempFile(totalPositions, cap, fullMarkdown, summary)));
-        }
-        catch (OperationCanceledException)
-        {
-            return ToolTelemetry.TraceAndReturn(toolName, "`find_usages` was cancelled.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "FindUsages failed for {SymbolName}", symbolName);
-            return ToolTelemetry.TraceAndReturn(
-                toolName,
-                WorkspaceLoadGuidance.FormatCaughtException(
-                    ex,
-                    $"Failed to find usages for `{symbolName}`: {ex.Message}"));
-        }
-    }
 
     [McpServerTool(Name = "find_implementations", Title = "Find interface implementations or derived types")]
     [Description(
         "Semantically finds all types that **implement** an interface or **derive from** a base class/struct in the loaded solution. "
         + "Applies **saved** `.cs` from disk first; unsaved editor buffers are ignored. "
         + "Use for questions like \"which classes implement `IRepository`?\" or \"what inherits from `BaseController`?\". "
-        + "Do not use text search or `find_usages` for this — they miss indirect hierarchies and match unrelated identifiers. "
+        + "Do not use text search or `find_symbol_references` for this — they miss indirect hierarchies and match unrelated identifiers. "
         + "For interface symbols uses Roslyn FindImplementations; for classes/structs uses FindDerivedClasses. "
         + "A `symbolName` containing `.` is treated as a **fully-qualified name (exact match)**; if it matches no declaration, the error lists the candidate FQNs (no fallback to the simple name). "
         + "Each result is reported as `path:line:col`. "
@@ -1556,7 +1372,7 @@ public sealed class NavigationTools
 
     private static string TruncateLine(string raw)
     {
-        return raw.Length > MaxFindUsagesSourceLineChars ? raw[..MaxFindUsagesSourceLineChars] + "…" : raw;
+        return raw.Length > MaxSourceLinePreviewChars ? raw[..MaxSourceLinePreviewChars] + "…" : raw;
     }
 
     private static string BuildFileListSummary(IEnumerable<string?> files)

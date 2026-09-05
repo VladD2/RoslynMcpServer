@@ -9,7 +9,7 @@ using Xunit;
 namespace RoslynMcpServer.Tests;
 
 /// <summary>
-/// Output format of the four search tools (plan §3.1 / §4.1): 1-based <c>line:col</c> is always present
+/// Output format of the search tools (plan §3.1 / §4.1): 1-based <c>line:col</c> is always present
 /// (independent of <c>preview</c>), the searched identifier's length is printed once in the header, and
 /// <c>preview</c> only toggles the source-line text.
 /// </summary>
@@ -42,7 +42,8 @@ public sealed class SearchOutputFormatTests
         }
         """;
 
-    // find_usages: single declaration `Widget`, one usage at 12:25 with a distinctive line for the preview check.
+    // find_symbol_references (name-based): single declaration `Widget`, one usage at 12:25 with a distinctive
+    // line for the preview check.
     private const string UsagesSource = """
         namespace Ns1
         {
@@ -194,11 +195,11 @@ public sealed class SearchOutputFormatTests
     }
 
     [Fact]
-    public async Task FindUsages_default_has_positions_without_line_text()
+    public async Task FindSymbolReferences_nameOnly_default_has_positions_without_line_text()
     {
         using var search = AdhocSearchTool.Create(UsagesSource);
 
-        var result = await search.Tool.FindUsages("Widget");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget");
 
         // 1-based line:col position, no source line text by default.
         Assert.Contains("- 12:25", result, StringComparison.Ordinal);
@@ -206,11 +207,11 @@ public sealed class SearchOutputFormatTests
     }
 
     [Fact]
-    public async Task FindUsages_preview_includes_trimmed_line_text()
+    public async Task FindSymbolReferences_nameOnly_preview_includes_trimmed_line_text()
     {
         using var search = AdhocSearchTool.Create(UsagesSource);
 
-        var result = await search.Tool.FindUsages("Widget", preview: true);
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", preview: true);
 
         // Position is still present, plus the trimmed source line text.
         Assert.Contains("- 12:25", result, StringComparison.Ordinal);
@@ -237,13 +238,13 @@ public sealed class SearchOutputFormatTests
         """;
 
     [Fact]
-    public async Task FindUsages_preview_truncates_lines_longer_than_400_chars()
+    public async Task FindSymbolReferences_nameOnly_preview_truncates_lines_longer_than_400_chars()
     {
         var source = LongLineTemplate.Replace("__LONG_COMMENT__", new string('x', 400));
 
         using var search = AdhocSearchTool.Create(source);
 
-        var result = await search.Tool.FindUsages("Widget", preview: true);
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", preview: true);
 
         var previewText = ExtractPreviewText(result, "- 12:25");
         Assert.True(previewText.Length <= 401, $"preview text exceeds the 400-char cap: {previewText.Length}");
