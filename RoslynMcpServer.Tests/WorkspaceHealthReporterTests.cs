@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcpServer.Services;
 using Xunit;
@@ -32,6 +33,34 @@ public sealed class WorkspaceHealthReporterTests
 
         Assert.Contains("ok (1/1 projects have obj/project.assets.json)", text, StringComparison.Ordinal);
         Assert.DoesNotContain("obj not found", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildHealthSection_reports_unresolved_analyzer_references()
+    {
+        // Part 0 (§0.3.3): the health section must name the project(s) whose analyzer MSBuildWorkspace could
+        // not resolve — that is the project to build/fix (or remove from the .csproj) for a permanent cure.
+        using var ctx = TempProject.Create();
+        var project = ctx.Workspace.CurrentSolution.Projects.First();
+        var updated = project.AddAnalyzerReference(new UnresolvedAnalyzerReference(@"C:\missing\SomeAnalyzer.dll"));
+        Assert.True(ctx.Workspace.TryApplyChanges(updated.Solution));
+
+        var text = WorkspaceHealthReporter.BuildHealthSection(ctx.SolutionPath, ctx.Workspace.CurrentSolution);
+
+        Assert.Contains("Analyzer references:", text, StringComparison.Ordinal);
+        Assert.Contains("1 unresolved analyzer reference(s) in 1 project(s)", text, StringComparison.Ordinal);
+        Assert.Contains("C:\\missing\\SomeAnalyzer.dll", text, StringComparison.Ordinal);
+        Assert.Contains("remove it from the `.csproj`", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildHealthSection_clean_solution_reports_zero_unresolved_analyzers()
+    {
+        using var ctx = TempProject.Create();
+
+        var text = WorkspaceHealthReporter.BuildHealthSection(ctx.SolutionPath, ctx.Workspace.CurrentSolution);
+
+        Assert.Contains("**Analyzer references:** ok (0 unresolved)", text, StringComparison.Ordinal);
     }
 
     [Fact]

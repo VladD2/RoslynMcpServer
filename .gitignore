@@ -10,6 +10,7 @@ TestResults/
 *.suo
 *.userosscache
 *.sln.docstates
+RoslynMcp.jsonc
 
 # Visual Studio / Rider / VS Code
 .vs/

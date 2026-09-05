@@ -37,6 +37,9 @@
     <None Include="opencode.json.sample" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="AGENTS.md.sample" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="publish-and-verify.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- Local deployment config (machine-specific; gitignored): must sit next to the exe so the server
+         loads the workspace lazily. Rebuild alone keeps it in the output directory. -->
+    <None Include="RoslynMcp.jsonc" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- Keep Roslyn MEF parts when trimming self-contained builds -->
   <ItemGroup>

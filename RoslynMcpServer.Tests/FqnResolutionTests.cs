@@ -154,29 +154,6 @@ public sealed class FqnResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task FindSymbolDefinition_fqn_selects_exact_declaration_only()
-    {
-        var tool = CreateTool();
-
-        var result = await tool.FindSymbolDefinition("global::Ns1.Guard");
-
-        Assert.Contains("FQN: global::Ns1.Guard", result, StringComparison.Ordinal);
-        Assert.DoesNotContain("Ns2.Guard", result, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task FindSymbolDefinition_fqn_not_found_lists_candidates()
-    {
-        var tool = CreateTool();
-
-        var result = await tool.FindSymbolDefinition("Ns9.Guard");
-
-        Assert.Contains("FQN `Ns9.Guard` was not found", result, StringComparison.Ordinal);
-        Assert.Contains("`global::Ns1.Guard`", result, StringComparison.Ordinal);
-        Assert.Contains("`global::Ns2.Guard`", result, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public async Task FindImplementations_fqn_selects_exact_base_type_only()
     {
         var tool = CreateTool();
@@ -225,17 +202,6 @@ public sealed class FqnResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task FindSymbolDefinition_member_fqn_selects_exact_method_only()
-    {
-        var tool = CreateTool();
-
-        var result = await tool.FindSymbolDefinition("Ns1.Guard.Run");
-
-        Assert.Contains("FQN: global::Ns1.Guard.Run", result, StringComparison.Ordinal);
-        Assert.DoesNotContain("Ns2.Guard.Run", result, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public async Task FindUsages_fqn_without_global_prefix_resolves()
     {
         var tool = CreateTool();
@@ -243,17 +209,6 @@ public sealed class FqnResolutionTests : IDisposable
         var result = await tool.FindUsages("Ns1.Guard");
 
         Assert.Contains("`global::Ns1.Guard`", result, StringComparison.Ordinal);
-        Assert.DoesNotContain("Ns2.Guard", result, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task FindSymbolDefinition_fqn_without_global_prefix_resolves()
-    {
-        var tool = CreateTool();
-
-        var result = await tool.FindSymbolDefinition("Ns1.Guard");
-
-        Assert.Contains("FQN: global::Ns1.Guard", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.Guard", result, StringComparison.Ordinal);
     }
 

@@ -15,13 +15,29 @@ namespace RoslynMcpServer.Tests;
 /// </summary>
 public sealed class SearchOutputFormatTests
 {
-    // find_symbol_definition: `Guard` identifier at line 3, column 18 (1-based).
+    // find_symbol_definition (position-based): two same-named `IsPathValid` members in different types of the same
+    // namespace. The invocation on line 17 binds to `Def.LongPathFile.IsPathValid` (declared on line 5); a
+    // position-based lookup (line 17, column computed from `IsPathValid`) must resolve that one, not
+    // `Def.OtherValidator.IsPathValid`.
     private const string DefinitionSource = """
-        namespace Ns1
+        namespace Def
         {
-            public class Guard
+            public static class LongPathFile
             {
-                public void Run() { }
+                public static bool IsPathValid(string path) => path.Length > 0;
+            }
+
+            public class OtherValidator
+            {
+                public bool IsPathValid() => false;
+            }
+
+            public static class Host
+            {
+                public static bool Check()
+                {
+                    return LongPathFile.IsPathValid("x");
+                }
             }
         }
         """;
@@ -84,17 +100,95 @@ public sealed class SearchOutputFormatTests
         """;
 
     [Fact]
+    public async Task FindSymbolDefinition_line_only_resolves_invoked_symbol()
+    {
+        var workspace = await RealWorkspaceSearchTool.CreateAsync(DefinitionSource);
+        try
+        {
+            // line 17 (`return LongPathFile.IsPathValid("x");`), no column: the column is computed from the
+            // first `IsPathValid` on that line and must resolve the invoked static method, not the other type.
+            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 17);
+
+            Assert.Contains("FQN: global::Def.LongPathFile.IsPathValid", result, StringComparison.Ordinal);
+            Assert.Contains("Line: 5", result, StringComparison.Ordinal);
+            Assert.DoesNotContain("OtherValidator.IsPathValid", result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task FindSymbolDefinition_line_and_column_resolves_invoked_symbol()
+    {
+        var workspace = await RealWorkspaceSearchTool.CreateAsync(DefinitionSource);
+        try
+        {
+            // line 17, column 33 = the `I` of `IsPathValid` on that line.
+            var result = await workspace.Tool.FindSymbolDefinition(
+                workspace.SourcePath, symbolName: "IsPathValid", line: 17, column: 33);
+
+            Assert.Contains("FQN: global::Def.LongPathFile.IsPathValid", result, StringComparison.Ordinal);
+            Assert.DoesNotContain("OtherValidator.IsPathValid", result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task FindSymbolDefinition_reports_fqn_line_and_col_1_based()
     {
-        using var search = AdhocSearchTool.Create(DefinitionSource);
+        var workspace = await RealWorkspaceSearchTool.CreateAsync(DefinitionSource);
+        try
+        {
+            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 17);
 
-        var result = await search.Tool.FindSymbolDefinition("Guard");
+            Assert.Contains("FQN: global::Def.LongPathFile.IsPathValid", result, StringComparison.Ordinal);
+            Assert.Contains("Line: 5", result, StringComparison.Ordinal);
+            Assert.Contains("Col: 28", result, StringComparison.Ordinal);
+            // The identifier length is printed exactly once (in the header), not per position.
+            Assert.Equal(1, CountOccurrences(result, "identifier length"));
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
 
-        Assert.Contains("FQN: global::Ns1.Guard", result, StringComparison.Ordinal);
-        Assert.Contains("Line: 3", result, StringComparison.Ordinal);
-        Assert.Contains("Col: 18", result, StringComparison.Ordinal);
-        // The identifier length is printed exactly once (in the header), not per position.
-        Assert.Equal(1, CountOccurrences(result, "identifier length"));
+    [Fact]
+    public async Task FindSymbolDefinition_line_without_symbolName_errors()
+    {
+        var workspace = await RealWorkspaceSearchTool.CreateAsync(DefinitionSource);
+        try
+        {
+            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, line: 17);
+
+            Assert.Contains("Error:", result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task FindSymbolDefinition_symbolNotOnLine_errors()
+    {
+        var workspace = await RealWorkspaceSearchTool.CreateAsync(DefinitionSource);
+        try
+        {
+            // `IsPathValid` does not occur on line 15 (`public static bool Check()`).
+            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 15);
+
+            Assert.Contains("was not found on line 15", result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -166,6 +260,25 @@ public sealed class SearchOutputFormatTests
             Assert.Contains("- 12:25", result, StringComparison.Ordinal);
             Assert.Contains("- 13:25", result, StringComparison.Ordinal);
             Assert.DoesNotContain("Inside:", result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task FindSymbolReferences_line_only_computes_column()
+    {
+        var workspace = await RealWorkspaceSearchTool.CreateAsync(ReferencesSource);
+        try
+        {
+            // line 14 (`t.Work()`), no column: the column is computed from the first `Work` on that line and
+            // resolves the `Target.Work` method; its invocation on line 14 is reported.
+            var result = await workspace.Tool.FindSymbolReferences(workspace.SourcePath, symbolName: "Work", line: 14);
+
+            Assert.Contains("Target.Work", result, StringComparison.Ordinal);
+            Assert.Contains("- 14:15", result, StringComparison.Ordinal);
         }
         finally
         {

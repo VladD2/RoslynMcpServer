@@ -612,8 +612,14 @@ public sealed class UtilityTools
                 targetSymbol = resolved[0].Symbol;
             }
 
-            var baseSolution = _solutionManager.GetCurrentSolution() ?? document.Project.Solution;
-            var references = await SymbolFinder.FindReferencesAsync(targetSymbol, baseSolution, cancellationToken);
+            // The analyzer-sanitized solution: SymbolFinder crashes on the project checksum when any project
+            // carries an UnresolvedAnalyzerReference stub (see WorkspaceAnalyzerSanitizer).
+            var baseSolution = _solutionManager.GetSanitizedSolution() ?? document.Project.Solution;
+            var (references, _) = await WorkspaceAnalyzerSanitizer.WithSanitizedRetryAsync(
+                sol => SymbolFinder.FindReferencesAsync(targetSymbol, sol, cancellationToken),
+                _solutionManager.GetSanitizedSolution,
+                baseSolution,
+                cancellationToken);
             var affectedLocations = references
                 .SelectMany(r => r.Locations)
                 .Where(l => l.Location.IsInSource)

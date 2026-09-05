@@ -39,7 +39,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
 
             // A solution-wide tool works right after the lazy load.
             var tool = new NavigationTools(manager, config, NullLogger<NavigationTools>.Instance);
-            var result = await tool.FindSymbolDefinition("ConfigThing");
+            var result = await tool.FindUsages("ConfigThing");
             Assert.Contains("global::ConfigNs.ConfigThing", result);
         }
         finally

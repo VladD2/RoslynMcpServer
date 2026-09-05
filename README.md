@@ -309,7 +309,7 @@ Policy summary (full text in the sample):
 - `includeExtensions` — optional extension filter for `search_code` (`.cs` by default; `*` = all files).
 - `caseSensitive` — optional for `search_code` (default `false`; use `true` for leftover branding checks).
 - `workspacePath` — `.sln` / `.slnx` / `.csproj` (and sometimes a directory): `run_dotnet_test`, `run_specific_test`, `run_format`, `list_nuget_packages`, `run_nuget_audit`, `list_outdated_packages`, optional reload for `list_projects` / `get_project_graph`. **`run_dotnet_build` / `run_dotnet_run` accept only a `.csproj`, `.sln`, or `.slnx` file path, not a directory.** Prefer `.sln`/`.slnx` for multi-config solutions.
-- `symbolName` — C# identifier for `find_symbol_definition`, `find_symbol_references`, `find_usages`, and `find_implementations` (exact name; matching is case-insensitive for definition/usages/implementations).
+- `symbolName` — C# identifier for `find_symbol_definition`, `find_symbol_references`, `find_usages`, and `find_implementations`. For `find_usages`/`find_implementations` it is a name/FQN (case-insensitive); for `find_symbol_definition`/`find_symbol_references` it locates the token on `line` when `column` is omitted.
 - `diagnosticId` — compiler/analyzer id from `get_diagnostics_for_file` (e.g. `CS0246`) for `get_code_fixes` / `apply_code_fix`.
 - `fixIndex` — 0-based index from `get_code_fixes` for `apply_code_fix`.
 
@@ -352,13 +352,15 @@ There are **42** registered tools (see list below) and **1** MCP prompt (`Refact
 ### Semantics / Navigation
 
 <details>
-<summary><code>find_symbol_definition</code> — Semantic lookup: where a type or member is declared (FQN + file:line:col) in the loaded solution.</summary>
+<summary><code>find_symbol_definition</code> — Where a symbol is defined, resolved at a 1-based position in a `.cs` file (FQN + file:line:col; the definition may be in another file).</summary>
 
 **Parameters:**
-- `symbolName: string` — class, interface, struct, enum, or member identifier, or an exact FQN.
+- `filePath: string` — the `.cs` file to resolve in.
+- `symbolName: string?` — the identifier to locate on `line` when `column` is omitted.
+- `line: int?`, `column: int?` — 1-based position (declaration or usage); `column` may be omitted (computed from `symbolName`).
 - `maxResults: int?`, `preview: bool?`
 
-**Behavior:** A `symbolName` containing `.` is treated as an exact FQN (no fallback to the simple name); on no match the error lists the candidate FQNs. Returns the symbol display string, **fully-qualified name (FQN)**, and **1-based file:line:col**. FQN does not distinguish method overloads (all overloads with the same name in the same type are reported); to select one overload use 1-based `line`/`column` in `find_symbol_references` or `rename_symbol`. Do **not** answer “where is X **declared**?” with plain-text search or shell `grep`/`findstr`/`Select-String`. For arbitrary text search use your environment’s built-in **`grep`** tool.
+**Behavior:** Pass `filePath` + `line`; when `column` is omitted it is computed from the first occurrence of `symbolName` on that line. The symbol at that position (a usage *or* a declaration) is resolved and its **definition** is reported — the symbol display string, **fully-qualified name (FQN)**, and **1-based file:line:col** (possibly in another file). Without a position, `symbolName` is matched against declarations in the file; if several share the name, the error lists the candidates (FQN + line:col). Do **not** answer “where is X **declared**?” with plain-text search or shell `grep`/`findstr`/`Select-String`. For all usages across the solution use `find_usages`.
 </details>
 
 <details>
@@ -901,7 +903,7 @@ cd D:\Devel\YourApp
 - `includeExtensions` — опциональный фильтр расширений для `search_code` (по умолчанию `.cs`; `*` = все файлы).
 - `caseSensitive` — опционально для `search_code` (по умолчанию `false`; для leftover branding — `true`).
 - `workspacePath` — `.sln` / `.slnx` / `.csproj` (и иногда каталог): `run_dotnet_test`, `run_specific_test`, `run_format`, `list_nuget_packages`, `run_nuget_audit`, `list_outdated_packages`, опциональная перезагрузка в `list_projects` / `get_project_graph`. **`run_dotnet_build` / `run_dotnet_run` принимают только путь к файлу `.csproj`, `.sln` или `.slnx`, не каталог.** Для multi-config solution предпочитайте `.sln`/`.slnx`.
-- `symbolName` — идентификатор C# для `find_symbol_definition`, `find_symbol_references`, `find_usages` и `find_implementations` (точное имя; регистр не важен для definition/usages/implementations).
+- `symbolName` — идентификатор C# для `find_symbol_definition`, `find_symbol_references`, `find_usages` и `find_implementations`. Для `find_usages`/`find_implementations` — имя/FQN (регистр не важен); для `find_symbol_definition`/`find_symbol_references` — находит токен на строке `line`, когда не задан `column`.
 - `diagnosticId` — id компилятора/анализатора из `get_diagnostics_for_file` (например `CS0246`) для `get_code_fixes` / `apply_code_fix`.
 - `fixIndex` — индекс (0-based) из `get_code_fixes` для `apply_code_fix`.
 
@@ -944,13 +946,15 @@ cd D:\Devel\YourApp
 ### Семантика / Навигация
 
 <details>
-<summary><code>find_symbol_definition</code> — Семантический поиск: где объявлен тип или член (FQN + file:line:col) в загруженном solution.</summary>
+<summary><code>find_symbol_definition</code> — Где определён символ, резолвится по 1-based позиции в файле `.cs` (FQN + file:line:col; определение может быть в другом файле).</summary>
 
 **Параметры:**
-- `symbolName: string` — имя класса, интерфейса, struct, enum или члена, либо точный FQN.
+- `filePath: string` — файл `.cs`, в котором резолвить.
+- `symbolName: string?` — идентификатор для поиска на строке `line`, когда не задан `column`.
+- `line: int?`, `column: int?` — 1-based позиция (объявление или использование); `column` можно опустить (вычисляется из `symbolName`).
 - `maxResults: int?`, `preview: bool?`
 
-**Поведение:** `symbolName` с `.` трактуется как точный FQN (без fallback на простое имя); при отсутствии совпадения ошибка перечисляет кандидатов FQN. Возвращает display-строку символа, **полное имя (FQN)** и **1-based file:line:col**. FQN не различает перегрузки метода (выдаются все перегрузки с одним именем в одном типе); чтобы выбрать одну — 1-based `line`/`column` в `find_symbol_references` или `rename_symbol`. Для «где **объявлен** X?» не используй текстовый поиск и не `grep`/`findstr`/`Select-String` из терминала. Для произвольного текста по файлам — встроенный **`grep`** среды.
+**Поведение:** передай `filePath` + `line`; когда `column` не задан, он вычисляется из первого вхождения `symbolName` на этой строке. Символ в этой позиции (использование *или* объявление) резолвится и выводится его **определение** — display-строка, **полное имя (FQN)** и **1-based file:line:col** (возможно в другом файле). Без позиции `symbolName` ищется среди объявлений в файле; если совпало несколько — ошибка перечисляет кандидатов (FQN + line:col). Для «где **объявлен** X?» не используй текстовый поиск и не `grep`/`findstr`/`Select-String` из терминала. Для всех использований по solution — `find_usages`.
 </details>
 
 <details>

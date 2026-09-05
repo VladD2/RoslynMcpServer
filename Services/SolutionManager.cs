@@ -57,6 +57,8 @@ public sealed class SolutionManager
 
     private MSBuildWorkspace? _workspace;
     private Solution? _solution;
+    private Solution? _sanitizedSolution;
+    private Solution? _sanitizedSolutionSource;
     private string? _loadedPath;
     private string? _loadedConfiguration;
     private string? _loadedPlatform;
@@ -259,6 +261,41 @@ public sealed class SolutionManager
     }
 
     /// <summary>
+    /// The current solution with <see cref="Microsoft.CodeAnalysis.Diagnostics.UnresolvedAnalyzerReference"/>
+    /// stubs removed (<see cref="WorkspaceAnalyzerSanitizer"/>), cached per raw-solution instance.
+    /// Solution-wide SymbolFinder searches must use this: Roslyn 5.9.0 throws
+    /// <c>InvalidOperationException</c> computing a project checksum that contains an unresolved analyzer stub,
+    /// which breaks <c>find_usages</c> / <c>find_symbol_references</c> / <c>get_call_graph</c> /
+    /// <c>find_implementations</c> for the whole solution.
+    /// A clean solution is returned as-is (no new <see cref="Solution"/> is allocated).
+    /// </summary>
+    public Solution? GetSanitizedSolution()
+    {
+        var raw = GetCurrentSolution();
+        if (raw is null)
+        {
+            return null;
+        }
+
+        if (ReferenceEquals(_sanitizedSolutionSource, raw))
+        {
+            return _sanitizedSolution;
+        }
+
+        var (sanitized, removed) = WorkspaceAnalyzerSanitizer.RemoveUnresolvedAnalyzers(raw);
+        if (removed > 0)
+        {
+            _logger.LogInformation(
+                "Removed {Removed} unresolved analyzer reference(s) from the in-memory solution (Roslyn 5.9.0 project-checksum crash workaround).",
+                removed);
+        }
+
+        _sanitizedSolutionSource = raw;
+        _sanitizedSolution = sanitized;
+        return sanitized;
+    }
+
+    /// <summary>
     /// Lazily loads the configured workspace (<c>workspace-path</c> from <c>RoslynMcp.jsonc</c>) when nothing
     /// is loaded yet, applies queued on-disk <c>.cs</c> changes (FileSystemWatcher dirty set), then returns the snapshot.
     /// Unsaved editor buffers are ignored — only files already written to disk.
@@ -294,7 +331,9 @@ public sealed class SolutionManager
             }
 
             await FlushDirtyDocumentsUnderLockAsync(cancellationToken).ConfigureAwait(false);
-            return GetCurrentSolution();
+            // Solution-wide SymbolFinder searches need the analyzer-sanitized solution (Roslyn 5.9.0
+            // project-checksum crash on UnresolvedAnalyzerReference — see WorkspaceAnalyzerSanitizer).
+            return GetSanitizedSolution();
         }
         finally
         {
@@ -507,6 +546,8 @@ public sealed class SolutionManager
             _workspace?.Dispose();
             _workspace = null;
             _solution = null;
+            _sanitizedSolution = null;
+            _sanitizedSolutionSource = null;
             _loadedPath = null;
             _loadedConfiguration = null;
             _loadedPlatform = null;

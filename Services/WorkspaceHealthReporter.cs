@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using RoslynMcpServer.Hosting;
@@ -29,6 +30,7 @@ public static class WorkspaceHealthReporter
         sb.AppendLine($"- **Solution/project:** `{fullPath}`");
         sb.AppendLine($"- **DotNet working directory:** `{workDir}`");
         sb.AppendLine($"- **Projects loaded:** {solution.Projects.Count()}");
+        sb.AppendLine($"- **Analyzer references:** {DescribeAnalyzerReferences(solution)}");
         sb.AppendLine(
             $"- **MSBuild Configuration:** {(string.IsNullOrWhiteSpace(configuration) ? "(SDK/workspace default)" : $"`{configuration}`")}");
         sb.AppendLine(
@@ -46,6 +48,42 @@ public static class WorkspaceHealthReporter
             + "Build/test/run via `run_dotnet_build`, `run_dotnet_test`, `run_dotnet_run` — not raw shell `dotnet`. "
             + "Find usages: `find_usages` / `find_symbol_references`.");
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Reports unresolved analyzer references per project. An <see cref="UnresolvedAnalyzerReference"/> means
+    /// MSBuildWorkspace could not resolve the analyzer assembly (typically: a custom analyzer not built for the
+    /// current configuration in the monorepo). Roslyn 5.9.0 cannot compute a project checksum that contains such
+    /// a stub, which breaks solution-wide symbol searches until the analyzer is built or removed from the
+    /// <c>.csproj</c>; the server strips the stub in-memory (see <see cref="WorkspaceAnalyzerSanitizer"/>), so
+    /// the line names the project to fix for a permanent cure.
+    /// </summary>
+    private static string DescribeAnalyzerReferences(Solution solution)
+    {
+        const int maxListed = 10;
+        var offenders = solution.Projects
+            .Select(p => (Project: p, Unresolved: p.AnalyzerReferences.OfType<UnresolvedAnalyzerReference>().ToList()))
+            .Where(x => x.Unresolved.Count > 0)
+            .ToList();
+
+        if (offenders.Count == 0)
+        {
+            return "ok (0 unresolved)";
+        }
+
+        var total = offenders.Sum(x => x.Unresolved.Count);
+        var entries = offenders
+            .SelectMany(x => x.Unresolved.Select(r => $"`{x.Project.Name}` — `{r.FullPath}`"))
+            .ToList();
+        var details = string.Join("; ", entries.Take(maxListed));
+        if (entries.Count > maxListed)
+        {
+            details += $"; … and {entries.Count - maxListed} more";
+        }
+
+        return $"{total} unresolved analyzer reference(s) in {offenders.Count} project(s): {details} "
+            + "(build the missing analyzer for the current configuration or remove it from the `.csproj`; "
+            + "the stub is stripped in-memory so symbol searches keep working)";
     }
 
     private static string DescribeRestoreAssets(Solution solution, ILogger? logger)
