@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Text;
@@ -1163,12 +1164,20 @@ public sealed class NavigationTools
         if (body is null)
             return (null, null, $"Symbol `{symbolName}` was not found on line {line} (enclosing member has no body).");
 
-        var bodyText = body.GetText();
-        var index = bodyText.ToString().IndexOf(symbolName, StringComparison.Ordinal);
-        if (index < 0)
+        SyntaxToken? matchingToken = null;
+        foreach (var t in body.DescendantTokens())
+        {
+            if (t.IsKind(SyntaxKind.IdentifierToken) && t.ValueText == symbolName)
+            {
+                matchingToken = t;
+                break;
+            }
+        }
+
+        if (matchingToken is null)
             return (null, null, $"Symbol `{symbolName}` was not found on line {line} or in the enclosing member body.");
 
-        var absolutePosition = body.SpanStart + index + symbolName.Length;
+        var absolutePosition = matchingToken.Value.SpanStart + symbolName.Length;
         var lp = text.Lines.GetLinePosition(absolutePosition);
         return (lp.Line + 1, lp.Character, null);
     }
