@@ -175,15 +175,17 @@ public sealed class SearchOutputFormatTests
     }
 
     [Fact]
-    public async Task FindSymbolDefinition_symbolNotOnLine_errors()
+    public async Task FindSymbolDefinition_symbolNotOnLine_falls_back_to_enclosing_member()
     {
         var workspace = await RealWorkspaceSearchTool.CreateAsync(DefinitionSource);
         try
         {
-            // `IsPathValid` does not occur on line 15 (`public static bool Check()`).
+            // `IsPathValid` does not occur on line 15 (`public static bool Check()`), but it does occur
+            // in the enclosing member's body (the `Check` call on line 17) — the fallback resolves that symbol.
             var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 15);
 
-            Assert.Contains("was not found on line 15", result, StringComparison.Ordinal);
+            Assert.Contains("FQN: global::Def.LongPathFile.IsPathValid", result, StringComparison.Ordinal);
+            Assert.DoesNotContain("OtherValidator.IsPathValid", result, StringComparison.Ordinal);
         }
         finally
         {
