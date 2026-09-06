@@ -17,5 +17,9 @@
 
   // Search output (optional).
   "max-results": 50,               // unified cap for find_*/search_code results (default 50); per-call argument overrides it
-  "preview": false                 // default for the preview argument of find_* (include source line text; false — the model decides)
+  "preview": false,                // default for the preview argument of find_* (include source line text; false — the model decides)
+
+  // search_code engine (optional). Absolute path to ripgrep (rg.exe). When absent, rg is looked up
+  // on PATH; when not found at all, a managed line-scan fallback is used.
+  "ripgrep-path": "C:/Program Files/ripgrep/rg.exe"
 }

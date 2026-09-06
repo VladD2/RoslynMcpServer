@@ -26,6 +26,13 @@ public sealed class WorkspaceConfig
     /// <summary><c>max-results</c>: unified cap for search methods; default <see cref="DefaultMaxResults"/> (50).</summary>
     public int? MaxResults { get; }
 
+    /// <summary>
+    /// <c>ripgrep-path</c>: absolute path to the ripgrep executable used by <c>search_code</c>.
+    /// When absent, <c>rg</c>/<c>rg.exe</c> is looked up on <c>PATH</c>; when not found at all,
+    /// the managed line-scan fallback is used.
+    /// </summary>
+    public string? RipgrepPath { get; }
+
     /// <summary><c>preview</c>: include source line text in search results; default false (the model decides).</summary>
     public bool Preview { get; }
 
@@ -42,6 +49,7 @@ public sealed class WorkspaceConfig
         Platform = ReadString(configuration, "platform");
         TargetFramework = ReadString(configuration, "target-framework");
         MaxResults = configuration.GetValue<int?>("max-results") ?? DefaultMaxResults;
+        RipgrepPath = ReadString(configuration, "ripgrep-path");
         Preview = configuration.GetValue<bool?>("preview") ?? false;
         LoadedFromPaths = loadedFromPaths ?? Array.Empty<string>();
     }

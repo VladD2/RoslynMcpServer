@@ -96,6 +96,7 @@ Keys (flat kebab-case):
 | `target-framework` | — | MSBuild `TargetFramework` (inner TFM, e.g. `net10.0`) when the solution uses `TargetFrameworks`. |
 | `max-results` | `50` | Unified cap for `find_*`/`search_code` results; per-call argument overrides it. |
 | `preview` | `false` | Default for the `preview` argument of the `find_*` search tools (include source line text). |
+| `ripgrep-path` | — | Absolute path to ripgrep (`rg.exe`) used by `search_code`. When absent, `rg` is looked up on `PATH`; when not found at all, a managed line-scan fallback is used. |
 
 Example `RoslynMcp.jsonc` — the repo ships [`RoslynMcp.jsonc.sample`](RoslynMcp.jsonc.sample) with all keys and comments; copy it to the exe directory for global defaults / to the project root for per-project overrides (cwd wins):
 
@@ -109,7 +110,10 @@ Example `RoslynMcp.jsonc` — the repo ships [`RoslynMcp.jsonc.sample`](RoslynMc
 
   // Search output (optional)
   "max-results": 50,  // unified cap of search methods (default 50)
-  "preview": false    // default for preview (false — the model decides)
+  "preview": false,   // default for preview (false — the model decides)
+
+  // search_code engine (optional)
+  "ripgrep-path": "C:/Program Files/ripgrep/rg.exe"  // absolute path to rg.exe (default: PATH lookup, then managed fallback)
 }
 ```
 
@@ -729,16 +733,18 @@ Clears the in-memory workspace — use `reload` after.
 ### Search / Miscellaneous
 
 <details>
-<summary><code>search_code</code> — Context-friendly ripgrep alternative (plain text or regex).</summary>
+<summary><code>search_code</code> — Source search powered by ripgrep (rg.exe; managed line-scan fallback when rg is unavailable).</summary>
 
 **Parameters:**
 - `pattern: string`
-- `directoryPath: string? = null`
+- `directoryPath: string? = null` — when omitted and a solution is loaded, the scope is the **minimal set of directories covering all solution projects** (a monorepo solution spans several trees, not just the `.sln` folder); without a loaded solution it falls back to the `.sln` folder, then the current directory.
 - `includeExtensions: string? = ".cs"` — comma/semicolon list (`.cs,.csproj,.json`), or `*` for all files.
-- `useRegex: bool = false`
+- `useRegex: bool = false` — when `true`, the pattern is a **ripgrep (Rust) regular expression** (no lookarounds).
 - `caseSensitive: bool = false` — default case-insensitive; for leftover branding checks set `true`.
 - `maxResults: int = 50`
 - `maxScanSeconds: int = 20`
+
+Skips `bin`, `obj`, and hidden directories (`.git`, `.vs`); respects `.gitignore` when present. The ripgrep executable is resolved from the `ripgrep-path` config, then `PATH`; when not found at all, a managed line-scan fallback with the same output contract is used.
 
 When the number of matches exceeds the cap, the full result (same markdown format) is written to a temp file and a short response (count + path + file summary) is returned — nothing is silently truncated.
 

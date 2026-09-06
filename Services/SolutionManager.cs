@@ -422,6 +422,39 @@ public sealed class SolutionManager
     }
 
     /// <summary>
+    /// Distinct directories containing the <c>.csproj</c> files of the currently loaded solution.
+    /// Reads the in-memory solution only — no lazy load is triggered. Empty when no solution is
+    /// loaded or no project has a file path. Used by <c>search_code</c>: a monorepo solution spans
+    /// several trees, so its <c>.sln</c> folder alone is not the search scope.
+    /// </summary>
+    public IReadOnlyList<string> GetLoadedProjectDirectories()
+    {
+        var solution = GetCurrentSolution();
+        if (solution is null)
+        {
+            return Array.Empty<string>();
+        }
+
+        var directories = new HashSet<string>(_pathComparer);
+        foreach (var project in solution.Projects)
+        {
+            var projectPath = project.FilePath;
+            if (string.IsNullOrWhiteSpace(projectPath))
+            {
+                continue;
+            }
+
+            var directory = Path.GetDirectoryName(Path.GetFullPath(projectPath));
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+            {
+                directories.Add(directory);
+            }
+        }
+
+        return directories.ToList();
+    }
+
+    /// <summary>
     /// Persists solution document changes to disk and updates the in-memory workspace.
     /// Caller must not hold <see cref="_workspaceLock"/> (this method acquires it).
     /// </summary>
