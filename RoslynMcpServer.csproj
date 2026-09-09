@@ -8,7 +8,6 @@
     <!-- Set up the NuGet package to be an MCP server -->
     <PackAsTool>true</PackAsTool>
     <PackageType>McpServer</PackageType>
-    <SelfContained>true</SelfContained>
     <PublishSelfContained>true</PublishSelfContained>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishReadyToRun>true</PublishReadyToRun>
@@ -37,8 +36,10 @@
     <None Include="opencode.json.sample" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="AGENTS.md.sample" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="publish-and-verify.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <!-- Local deployment config (machine-specific; gitignored): must sit next to the exe so the server
-         loads the workspace lazily. Rebuild alone keeps it in the output directory. -->
+  </ItemGroup>
+  <!-- Local deployment config (machine-specific; gitignored): must sit next to the exe so the server
+       loads the workspace lazily. Rebuild alone keeps it in the output directory. Only copied when present. -->
+  <ItemGroup Condition="Exists('RoslynMcp.jsonc')">
     <None Include="RoslynMcp.jsonc" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- Keep Roslyn MEF parts when trimming self-contained builds -->

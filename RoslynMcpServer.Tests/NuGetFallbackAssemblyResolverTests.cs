@@ -14,14 +14,16 @@ public sealed class NuGetFallbackAssemblyResolverTests
             "packages");
         if (!Directory.Exists(nugetRoot))
         {
-            return;
+            Assert.Skip($"NuGet packages folder not found: {nugetRoot}.");
         }
 
         var path = NuGetFallbackAssemblyResolver.TryFindAssemblyDll("Newtonsoft.Json", nugetRoot);
-        if (File.Exists(path ?? string.Empty))
+        if (string.IsNullOrEmpty(path))
         {
-            Assert.EndsWith("Newtonsoft.Json.dll", path, StringComparison.OrdinalIgnoreCase);
+            Assert.Skip($"Newtonsoft.Json package is not present in the NuGet cache ({nugetRoot}); nothing to verify.");
         }
+
+        Assert.EndsWith("Newtonsoft.Json.dll", path!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -33,12 +35,16 @@ public sealed class NuGetFallbackAssemblyResolverTests
             "packages");
         if (!Directory.Exists(nugetRoot))
         {
-            return;
+            Assert.Skip($"NuGet packages folder not found: {nugetRoot}.");
         }
 
         var path = NuGetFallbackAssemblyResolver.TryFindAssemblyDll("System.IO.Ports", nugetRoot);
-        Assert.False(string.IsNullOrEmpty(path));
-        Assert.EndsWith("System.IO.Ports.dll", path, StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(path))
+        {
+            Assert.Skip($"system.io.ports package is not present in the NuGet cache ({nugetRoot}); nothing to verify.");
+        }
+
+        Assert.EndsWith("System.IO.Ports.dll", path!, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain($"{Path.DirectorySeparatorChar}unix{Path.DirectorySeparatorChar}", path!, StringComparison.OrdinalIgnoreCase);
     }
 }
