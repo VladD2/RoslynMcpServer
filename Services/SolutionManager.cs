@@ -23,6 +23,9 @@ public sealed class SolutionManager
     /// <summary>Ignore FileSystemWatcher events for paths we just wrote (partial-read race).</summary>
     private const int SelfWriteSuppressMs = 1000;
 
+    /// <summary>Pathological-solution guard: at most this many distinct directories are watched.</summary>
+    private const int MaxDiskWatchRoots = 16;
+
     /// <summary>
     /// Explicit MEF host so MSBuildWorkspace discovers the C# language / project loader
     /// (fixes "language 'C#' is not supported" when using parameterless MSBuildWorkspace.Create()).
@@ -50,7 +53,8 @@ public sealed class SolutionManager
 
     private readonly ConcurrentDictionary<string, byte> _dirtySourcePaths;
     private readonly ConcurrentDictionary<string, long> _selfWriteUntilTicks;
-    private FileSystemWatcher? _diskWatcher;
+    private readonly List<FileSystemWatcher> _diskWatchers = new();
+    private IReadOnlyList<string> _watchRoots = Array.Empty<string>();
     private volatile bool _refreshAllDocuments;
     private volatile bool _projectGraphStale;
     private volatile bool _loadInProgress;
@@ -96,6 +100,14 @@ public sealed class SolutionManager
     /// simply waits on the lock; the flag lets <c>get_mcp_server_info</c> report "loading" instead of "no".
     /// </summary>
     public bool IsLoadInProgress => _loadInProgress;
+
+    /// <summary>
+    /// Cached directories watched on disk for the currently loaded solution (the minimal non-nested
+    /// set of the solution folder plus every project's directory; see <see cref="ComputeWatchRoots"/>).
+    /// Recomputed only when the solution/project set changes (full load); empty when no workspace is loaded.
+    /// Test accessor.
+    /// </summary>
+    internal IReadOnlyList<string> WatchRoots => _watchRoots;
 
     public async Task<Solution> LoadAsync(string path)
     {
@@ -572,6 +584,7 @@ public sealed class SolutionManager
         try
         {
             StopDiskWatcherUnderLock();
+            _watchRoots = Array.Empty<string>();
             _dirtySourcePaths.Clear();
             _selfWriteUntilTicks.Clear();
             _refreshAllDocuments = false;
@@ -713,6 +726,7 @@ public sealed class SolutionManager
         try
         {
             StopDiskWatcherUnderLock();
+            _watchRoots = Array.Empty<string>();
             _workspace?.Dispose();
             _dirtySourcePaths.Clear();
             _selfWriteUntilTicks.Clear();
@@ -768,7 +782,12 @@ public sealed class SolutionManager
             _loadedPlatform = platform;
             _loadedTargetFramework = targetFramework;
             _lastDiagnostics = CollectDiagnostics(workspace, capturedDiagnostics);
-            StartDiskWatcherUnderLock(fullPath);
+            // The project set only changes on a full load, so the watch-root cache is (re)computed here only.
+            _watchRoots = ComputeWatchRoots(
+                fullPath,
+                workspace.CurrentSolution.Projects.Select(p => p.FilePath),
+                _pathComparer);
+            StartDiskWatchersUnderLock(_watchRoots);
             _logger.LogInformation(
                 "Loaded Roslyn workspace from {Path} (Configuration={Configuration}, Platform={Platform}, TargetFramework={TargetFramework})",
                 fullPath,
@@ -849,71 +868,186 @@ public sealed class SolutionManager
         LogProcessWorkingSet("document_update");
     }
 
-    private void StartDiskWatcherUnderLock(string workspaceFilePath)
+    /// <summary>
+    /// Computes the minimal set of directories to watch for a loaded file and its projects: the loaded
+    /// file's directory plus every project's directory, with duplicates and directories nested under
+    /// another selected directory removed. Pure (no I/O) so it can be unit-tested.
+    /// </summary>
+    internal static IReadOnlyList<string> ComputeWatchRoots(
+        string loadedFilePath,
+        IEnumerable<string?> projectFilePaths,
+        IEqualityComparer<string> comparer)
     {
-        StopDiskWatcherUnderLock();
-        var directory = Path.GetDirectoryName(Path.GetFullPath(workspaceFilePath));
-        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        var candidates = new List<string>();
+        AddCandidateDirectory(candidates, loadedFilePath);
+
+        foreach (var projectFilePath in projectFilePaths)
         {
-            _logger.LogDebug("Disk watcher not started: workspace directory missing ({Path}).", workspaceFilePath);
+            AddCandidateDirectory(candidates, projectFilePath);
+        }
+
+        var roots = new List<string>(candidates.Count);
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            var candidate = candidates[i];
+            var nestedUnderOther = false;
+            for (var j = 0; j < candidates.Count; j++)
+            {
+                if (j != i && IsStrictlyUnderDirectory(candidate, candidates[j], comparer))
+                {
+                    nestedUnderOther = true;
+                    break;
+                }
+            }
+
+            if (!nestedUnderOther && !roots.Contains(candidate, comparer))
+            {
+                roots.Add(candidate);
+            }
+        }
+
+        return roots;
+    }
+
+    private static void AddCandidateDirectory(List<string> candidates, string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
             return;
         }
 
-        try
+        var directory = Path.GetDirectoryName(Path.GetFullPath(filePath));
+        if (string.IsNullOrWhiteSpace(directory))
         {
-            var watcher = new FileSystemWatcher(directory)
-            {
-                IncludeSubdirectories = true,
-                NotifyFilter = NotifyFilters.FileName
-                    | NotifyFilters.LastWrite
-                    | NotifyFilters.Size
-                    | NotifyFilters.DirectoryName,
-                Filter = "*.*",
-            };
+            return;
+        }
 
-            if (OperatingSystem.IsWindows())
+        var trimmed = directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (trimmed.Length == 0)
+        {
+            return;
+        }
+
+        candidates.Add(trimmed);
+    }
+
+    private static bool IsStrictlyUnderDirectory(string path, string directory, IEqualityComparer<string> comparer)
+    {
+        if (comparer.Equals(path, directory))
+        {
+            return false;
+        }
+
+        var prefix = directory + Path.DirectorySeparatorChar;
+        if (path.Length <= prefix.Length)
+        {
+            return false;
+        }
+
+        return comparer.Equals(path.Substring(0, prefix.Length), prefix);
+    }
+
+    /// <summary>
+    /// Must be called with <see cref="_workspaceLock"/> held. Creates one recursive
+    /// <see cref="FileSystemWatcher"/> per watch root; a single failing root is logged and skipped
+    /// so one bad directory does not blind the rest.
+    /// </summary>
+    private void StartDiskWatchersUnderLock(IReadOnlyList<string> roots)
+    {
+        StopDiskWatcherUnderLock();
+
+        if (roots.Count == 0)
+        {
+            _logger.LogDebug("Disk watchers not started: no watch roots.");
+            return;
+        }
+
+        if (roots.Count > MaxDiskWatchRoots)
+        {
+            _logger.LogWarning(
+                "Workspace has {RootCount} watch roots; watching the first {Max} (pathological-solution guard).",
+                roots.Count,
+                MaxDiskWatchRoots);
+        }
+
+        foreach (var directory in roots.Take(MaxDiskWatchRoots))
+        {
+            if (!Directory.Exists(directory))
             {
-                watcher.InternalBufferSize = 64 * 1024;
+                _logger.LogDebug("Disk watcher not started: directory missing ({Directory}).", directory);
+                continue;
             }
 
-            watcher.Changed += OnDiskWatcherChanged;
-            watcher.Created += OnDiskWatcherChanged;
-            watcher.Deleted += OnDiskWatcherChanged;
-            watcher.Renamed += OnDiskWatcherRenamed;
-            watcher.Error += OnDiskWatcherError;
-            watcher.EnableRaisingEvents = true;
-            _diskWatcher = watcher;
-            _logger.LogInformation("Disk watcher started on {Directory}", directory);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Disk watcher failed to start for {Directory}. Symbol search stays on the load snapshot until `reload` (or `reset_workspace`).", directory);
+            try
+            {
+                var watcher = new FileSystemWatcher(ToWatcherPath(directory))
+                {
+                    IncludeSubdirectories = true,
+                    NotifyFilter = NotifyFilters.FileName
+                        | NotifyFilters.LastWrite
+                        | NotifyFilters.Size
+                        | NotifyFilters.DirectoryName,
+                    Filter = "*.*",
+                };
+
+                if (OperatingSystem.IsWindows())
+                {
+                    watcher.InternalBufferSize = 64 * 1024;
+                }
+
+                watcher.Changed += OnDiskWatcherChanged;
+                watcher.Created += OnDiskWatcherChanged;
+                watcher.Deleted += OnDiskWatcherChanged;
+                watcher.Renamed += OnDiskWatcherRenamed;
+                watcher.Error += OnDiskWatcherError;
+                watcher.EnableRaisingEvents = true;
+                _diskWatchers.Add(watcher);
+                _logger.LogInformation("Disk watcher started on {Directory}", directory);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Disk watcher failed to start for {Directory}. Symbol search stays on the load snapshot until `reload` (or `reset_workspace`).", directory);
+            }
         }
     }
 
+    /// <summary>Drive roots are cached without the trailing separator ("C:"); restore it for the watcher.</summary>
+    private static string ToWatcherPath(string directory)
+    {
+        return directory.Length == 2 && directory[1] == ':'
+            ? directory + Path.DirectorySeparatorChar
+            : directory;
+    }
+
+    /// <summary>
+    /// Must be called with <see cref="_workspaceLock"/> held. Stops and disposes every watch-root watcher.
+    /// </summary>
     private void StopDiskWatcherUnderLock()
     {
-        var watcher = _diskWatcher;
-        if (watcher is null)
+        if (_diskWatchers.Count == 0)
         {
             return;
         }
 
-        _diskWatcher = null;
-        try
+        var watchers = _diskWatchers.ToList();
+        _diskWatchers.Clear();
+        foreach (var watcher in watchers)
         {
-            watcher.EnableRaisingEvents = false;
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+            try
+            {
+                watcher.EnableRaisingEvents = false;
+            }
+            catch (ObjectDisposedException)
+            {
+            }
 
-        watcher.Changed -= OnDiskWatcherChanged;
-        watcher.Created -= OnDiskWatcherChanged;
-        watcher.Deleted -= OnDiskWatcherChanged;
-        watcher.Renamed -= OnDiskWatcherRenamed;
-        watcher.Error -= OnDiskWatcherError;
-        watcher.Dispose();
+            watcher.Changed -= OnDiskWatcherChanged;
+            watcher.Created -= OnDiskWatcherChanged;
+            watcher.Deleted -= OnDiskWatcherChanged;
+            watcher.Renamed -= OnDiskWatcherRenamed;
+            watcher.Error -= OnDiskWatcherError;
+            watcher.Dispose();
+        }
     }
 
     private void OnDiskWatcherChanged(object sender, FileSystemEventArgs e)

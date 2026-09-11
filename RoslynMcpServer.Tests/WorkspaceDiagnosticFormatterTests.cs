@@ -246,6 +246,26 @@ public sealed class WorkspaceDiagnosticFormatterTests
     }
 
     [Fact]
+    public void IsBlockingLoadFailure_false_for_localized_extension_not_associated_with_language()
+    {
+        // Russian MSBuild culture: the sentence is localized, only the quoted extension is stable.
+        var formatted = WorkspaceDiagnosticFormatter.Format(
+            "Failure",
+            "Не удается открыть проект \"D:\\m\\src\\Native.vcxproj\", так как расширение файла \".vcxproj\" не связано с языком.");
+        Assert.StartsWith("Failure:", formatted, StringComparison.Ordinal);
+        Assert.False(WorkspaceDiagnosticFormatter.IsBlockingLoadFailure(formatted));
+    }
+
+    [Fact]
+    public void IsBlockingLoadFailure_true_for_hard_failure_quoting_whole_vcxproj_path()
+    {
+        // A quoted whole path (the dot is preceded by a file name, not a quote) is not the
+        // extension-association marker and must stay blocking.
+        const string formatted = "Failure: The project file 'D:\\m\\src\\Native.vcxproj' could not be loaded.";
+        Assert.True(WorkspaceDiagnosticFormatter.IsBlockingLoadFailure(formatted));
+    }
+
+    [Fact]
     public void IsBlockingLoadFailure_false_for_missing_referenced_project_file()
     {
         var formatted = WorkspaceDiagnosticFormatter.Format(

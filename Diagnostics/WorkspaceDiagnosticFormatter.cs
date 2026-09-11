@@ -1,9 +1,10 @@
+using System.CodeDom.Compiler;
 using System.Text.RegularExpressions;
 
 namespace RoslynMcpServer.Diagnostics;
 
 /// <summary>Normalizes MSBuildWorkspace diagnostic text for MCP responses.</summary>
-public static class WorkspaceDiagnosticFormatter
+public static partial class WorkspaceDiagnosticFormatter
 {
     public static string Format(string kind, string message)
     {
@@ -90,10 +91,17 @@ public static class WorkspaceDiagnosticFormatter
     /// (C++ / other non-C# project types — Visual Studio does not give them C# services either) and
     /// <c>Project file not found</c> (a referenced project absent from the checkout).
     /// Both stay visible in the diagnostics list but must not fail <c>reload</c> / <c>load_workspace</c>.
+    /// The "not associated with a language" text is matched in every MSBuild culture: the English phrase
+    /// plus a locale-independent marker — the offending extension quoted on its own (".vcxproj"), which
+    /// only that diagnostic family produces (paths quote the whole file, never the extension alone).
     /// </summary>
     public static bool IsExpectedNonCSharpProjectAdvisory(string message) =>
         message.Contains("is not associated with a language", StringComparison.OrdinalIgnoreCase)
-        || message.Contains("Project file not found", StringComparison.OrdinalIgnoreCase);
+        || message.Contains("Project file not found", StringComparison.OrdinalIgnoreCase)
+        || RxQuotedNonCSharpProjectExtension().IsMatch(message);
+
+    [GeneratedRegex(@"['""]\.(?:vcx|cpp|wix|sql|njs|sh|cd|db|x|fsx)proj['""]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxQuotedNonCSharpProjectExtension();
 
     /// <summary>
     /// Design-time evaluation left <c>TargetFramework</c> empty (typical of Bazel-generated csproj

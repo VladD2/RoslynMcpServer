@@ -38,7 +38,9 @@ public sealed class WorkspaceMixedProjectLoadTests : IClassFixture<WorkspaceMixe
             Assert.Contains("Successfully loaded workspace", result, StringComparison.Ordinal);
             Assert.DoesNotContain("Workspace Load Failed", result, StringComparison.Ordinal);
             Assert.Contains("- App [Library]", result, StringComparison.Ordinal);
-            Assert.Contains("not associated with a language", result, StringComparison.OrdinalIgnoreCase);
+            // Locale-independent: the diagnostic sentence is localized by the MSBuild culture, but the
+            // offending project path is embedded verbatim in every culture.
+            Assert.Contains("Native.vcxproj", result, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
