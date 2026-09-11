@@ -92,7 +92,7 @@ public sealed class VirtualReferencesTests : IClassFixture<VirtualReferencesTest
     {
         var declaration = PositionOf(Source, "public override void ApplyChanges()");
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "ApplyChanges", line: declaration.Line);
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "ApplyChanges", line: declaration.Line, cancellationToken: TestContext.Current.CancellationToken);
 
         // All 6 family call sites are still reported (default behaviour unchanged), plus the dispatch note.
         Assert.Contains("Found **6** reference location(s).", result);
@@ -110,7 +110,8 @@ public sealed class VirtualReferencesTests : IClassFixture<VirtualReferencesTest
         var declaration = PositionOf(Source, "public override void ApplyChanges()");
 
         var result = await _fixture.Navigation.FindSymbolReferences(
-            _fixture.SourcePath, symbolName: "ApplyChanges", line: declaration.Line, directOnly: true);
+            _fixture.SourcePath, symbolName: "ApplyChanges", line: declaration.Line, directOnly: true,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         // 4 direct (this/Derived/GrandChild/Derived?), 2 excluded (Base receiver, Sibling receiver).
         Assert.Contains("Found **4** direct reference location(s) (2 virtual dispatch site(s) excluded).", result);
@@ -132,7 +133,7 @@ public sealed class VirtualReferencesTests : IClassFixture<VirtualReferencesTest
     {
         var declaration = PositionOf(Source, "public virtual void ApplyChanges()");
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "ApplyChanges", line: declaration.Line);
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "ApplyChanges", line: declaration.Line, cancellationToken: TestContext.Current.CancellationToken);
 
         // Every family receiver (Base/Derived/Sibling/GrandChild) is the base type or a derived type, so
         // nothing is a dispatch site and no note is emitted.
@@ -146,7 +147,8 @@ public sealed class VirtualReferencesTests : IClassFixture<VirtualReferencesTest
         var declaration = PositionOf(Source, "public virtual void ApplyChanges()");
 
         var result = await _fixture.Navigation.FindSymbolReferences(
-            _fixture.SourcePath, symbolName: "ApplyChanges", line: declaration.Line, directOnly: true);
+            _fixture.SourcePath, symbolName: "ApplyChanges", line: declaration.Line, directOnly: true,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         // directOnly is a no-op for the base virtual method (0 dispatch sites) — plain (non-direct) header.
         Assert.Contains("Found **6** reference location(s).", result);
@@ -161,7 +163,8 @@ public sealed class VirtualReferencesTests : IClassFixture<VirtualReferencesTest
         var usage = PositionOf(Source, "new Client().Use(", charOffset: 13);
 
         var result = await _fixture.Navigation.FindSymbolReferences(
-            _fixture.SourcePath, symbolName: "Use", line: declaration.Line, directOnly: true);
+            _fixture.SourcePath, symbolName: "Use", line: declaration.Line, directOnly: true,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("Found **1** reference location(s).", result);
         Assert.Contains($"- {usage.Line}:{usage.Column}", result, StringComparison.Ordinal);

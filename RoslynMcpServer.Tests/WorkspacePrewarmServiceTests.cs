@@ -41,7 +41,7 @@ public sealed class WorkspacePrewarmServiceTests : IClassFixture<WorkspacePrewar
             while (manager.GetCurrentSolution() is null)
             {
                 Assert.True(DateTime.UtcNow < deadline, "Workspace prewarm did not finish within 180s.");
-                await Task.Delay(250);
+                await Task.Delay(250, cancellationToken: TestContext.Current.CancellationToken);
             }
 
             var solution = manager.GetCurrentSolution();
@@ -53,7 +53,7 @@ public sealed class WorkspacePrewarmServiceTests : IClassFixture<WorkspacePrewar
 
             // An explicit load with the same path + properties hits the load cache (no second real load).
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
-            var result = await tools.LoadWorkspace(_fixture.ProjectPath);
+            var result = await tools.LoadWorkspace(_fixture.ProjectPath, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Successfully loaded workspace", result, StringComparison.Ordinal);
             Assert.Contains("- Config [Library]", result, StringComparison.Ordinal);
             Assert.Equal(
@@ -63,7 +63,7 @@ public sealed class WorkspacePrewarmServiceTests : IClassFixture<WorkspacePrewar
         finally
         {
             await service.StopAsync(CancellationToken.None);
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -75,7 +75,7 @@ public sealed class WorkspacePrewarmServiceTests : IClassFixture<WorkspacePrewar
         var service = new WorkspacePrewarmService(manager, config, NullLogger<WorkspacePrewarmService>.Instance);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(1000);
+        await Task.Delay(1000, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Null(manager.GetCurrentSolution());
         Assert.False(manager.IsLoadInProgress);

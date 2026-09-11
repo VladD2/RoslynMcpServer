@@ -35,7 +35,7 @@ public sealed class NameBasedReferencesTests
     {
         using var search = AdhocSearchTool.Create(Source);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("## Usages for `Widget`", result, StringComparison.Ordinal);
         Assert.Contains("`global::Ns1.Widget`", result, StringComparison.Ordinal);
@@ -49,7 +49,7 @@ public sealed class NameBasedReferencesTests
     {
         using var search = AdhocSearchTool.Create(Source);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", directOnly: true);
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", directOnly: true, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("Error: `directOnly` is only valid with `filePath`.", result, StringComparison.Ordinal);
     }
@@ -59,7 +59,7 @@ public sealed class NameBasedReferencesTests
     {
         using var search = AdhocSearchTool.Create(Source);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", line: 3);
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", line: 3, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("Error: `line`/`column` require `filePath`. For name-based search, omit them.", result, StringComparison.Ordinal);
     }
@@ -69,7 +69,7 @@ public sealed class NameBasedReferencesTests
     {
         using var search = AdhocSearchTool.Create(Source);
 
-        var result = await search.Tool.FindSymbolReferences();
+        var result = await search.Tool.FindSymbolReferences(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("Error: provide `symbolName`.", result, StringComparison.Ordinal);
     }

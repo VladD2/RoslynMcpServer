@@ -32,7 +32,7 @@ public sealed class WorkspaceToolsRestoreTests : IClassFixture<WorkspaceToolsRes
         {
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-            var result = await tools.LoadWorkspace(_fixture.ConfigProjectPath);
+            var result = await tools.LoadWorkspace(_fixture.ConfigProjectPath, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Successfully loaded workspace", result, StringComparison.Ordinal);
             Assert.Contains("Workspace health", result, StringComparison.Ordinal);
@@ -41,7 +41,7 @@ public sealed class WorkspaceToolsRestoreTests : IClassFixture<WorkspaceToolsRes
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -55,8 +55,8 @@ public sealed class WorkspaceToolsRestoreTests : IClassFixture<WorkspaceToolsRes
         {
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-            var first = await tools.LoadWorkspace(_fixture.ConfigProjectPath);
-            var second = await tools.LoadWorkspace(_fixture.ConfigProjectPath);
+            var first = await tools.LoadWorkspace(_fixture.ConfigProjectPath, cancellationToken: TestContext.Current.CancellationToken);
+            var second = await tools.LoadWorkspace(_fixture.ConfigProjectPath, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Successfully loaded workspace", first, StringComparison.Ordinal);
             Assert.Contains("Successfully loaded workspace", second, StringComparison.Ordinal);
@@ -67,7 +67,7 @@ public sealed class WorkspaceToolsRestoreTests : IClassFixture<WorkspaceToolsRes
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -80,8 +80,8 @@ public sealed class WorkspaceToolsRestoreTests : IClassFixture<WorkspaceToolsRes
         {
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-            var first = await tools.LoadWorkspace(_fixture.ConfigProjectPath);
-            var second = await tools.LoadWorkspace(_fixture.DeepProjectPath);
+            var first = await tools.LoadWorkspace(_fixture.ConfigProjectPath, cancellationToken: TestContext.Current.CancellationToken);
+            var second = await tools.LoadWorkspace(_fixture.DeepProjectPath, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("- Config [Library]", first, StringComparison.Ordinal);
             Assert.Contains("- Deep [Library]", second, StringComparison.Ordinal);
@@ -89,7 +89,7 @@ public sealed class WorkspaceToolsRestoreTests : IClassFixture<WorkspaceToolsRes
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -102,27 +102,27 @@ public sealed class WorkspaceToolsRestoreTests : IClassFixture<WorkspaceToolsRes
         {
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-            var loaded = await tools.LoadWorkspace(_fixture.DeepProjectPath);
+            var loaded = await tools.LoadWorkspace(_fixture.DeepProjectPath, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Successfully loaded workspace", loaded, StringComparison.Ordinal);
 
-            var reset = await tools.ResetWorkspace();
+            var reset = await tools.ResetWorkspace(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Workspace cleared", reset, StringComparison.Ordinal);
             Assert.Null(manager.GetCurrentSolution());
             Assert.Null(manager.GetLoadedWorkspacePath());
 
             // A second reset on an already-empty workspace is a no-op, not an error.
-            var resetAgain = await tools.ResetWorkspace();
+            var resetAgain = await tools.ResetWorkspace(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Workspace cleared", resetAgain, StringComparison.Ordinal);
 
             // After the reset, reload loads the configured workspace from the config again.
-            var reloaded = await tools.Reload();
+            var reloaded = await tools.Reload(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Successfully loaded workspace", reloaded, StringComparison.Ordinal);
             Assert.Contains("- Config [Library]", reloaded, StringComparison.Ordinal);
             Assert.Equal(Path.GetFullPath(_fixture.ConfigProjectPath), manager.GetLoadedWorkspacePath(), StringComparer.OrdinalIgnoreCase);
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -135,14 +135,14 @@ public sealed class WorkspaceToolsRestoreTests : IClassFixture<WorkspaceToolsRes
         {
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-            var result = await tools.LoadWorkspace(Path.Combine(_fixture.Root, "DoesNotExist.sln"));
+            var result = await tools.LoadWorkspace(Path.Combine(_fixture.Root, "DoesNotExist.sln"), cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Solution or project file not found", result, StringComparison.Ordinal);
             Assert.Null(manager.GetCurrentSolution());
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 

@@ -17,11 +17,12 @@ public sealed class WorkspaceDocumentDiskSyncTests
             ctx.Workspace.CurrentSolution,
             new[] { ctx.SourcePath },
             refreshAllDocuments: false,
-            StringComparison.OrdinalIgnoreCase);
+            StringComparison.OrdinalIgnoreCase,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(1, result.Updated);
         Assert.Equal(0, result.Added);
-        var text = await result.Solution.GetDocument(ctx.DocumentId)!.GetTextAsync();
+        var text = await result.Solution.GetDocument(ctx.DocumentId)!.GetTextAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains("public int X", text.ToString(), StringComparison.Ordinal);
     }
 
@@ -34,7 +35,8 @@ public sealed class WorkspaceDocumentDiskSyncTests
             ctx.Workspace.CurrentSolution,
             new[] { ctx.SourcePath },
             refreshAllDocuments: false,
-            StringComparison.OrdinalIgnoreCase);
+            StringComparison.OrdinalIgnoreCase,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(0, result.Updated);
         Assert.Equal(1, result.Unchanged);
@@ -52,7 +54,8 @@ public sealed class WorkspaceDocumentDiskSyncTests
             ctx.Workspace.CurrentSolution,
             new[] { extra },
             refreshAllDocuments: false,
-            StringComparison.OrdinalIgnoreCase);
+            StringComparison.OrdinalIgnoreCase,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(1, result.Added);
         Assert.Contains(
@@ -70,7 +73,8 @@ public sealed class WorkspaceDocumentDiskSyncTests
             ctx.Workspace.CurrentSolution,
             new[] { ctx.SourcePath },
             refreshAllDocuments: false,
-            StringComparison.OrdinalIgnoreCase);
+            StringComparison.OrdinalIgnoreCase,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(1, result.Removed);
         Assert.Null(result.Solution.GetDocument(ctx.DocumentId));
@@ -89,7 +93,8 @@ public sealed class WorkspaceDocumentDiskSyncTests
             ctx.Workspace.CurrentSolution,
             new[] { binCs },
             refreshAllDocuments: false,
-            StringComparison.OrdinalIgnoreCase);
+            StringComparison.OrdinalIgnoreCase,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(0, result.Added);
         Assert.DoesNotContain(

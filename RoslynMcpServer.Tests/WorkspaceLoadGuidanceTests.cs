@@ -134,7 +134,7 @@ public sealed class WorkspaceLoadGuidanceTests
             .SetValue(manager, true);
 
         var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
-        var resetResponse = await tools.ResetWorkspace();
+        var resetResponse = await tools.ResetWorkspace(cancellationToken: TestContext.Current.CancellationToken);
 
         var strings = new[]
         {
@@ -201,7 +201,7 @@ public sealed class WorkspaceLoadGuidanceTests
         var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
         var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-        var result = await tools.Reload();
+        var result = await tools.Reload(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.StartsWith("Error: no workspace path", result, StringComparison.Ordinal);
         Assert.Contains("workspace-path", result, StringComparison.Ordinal);

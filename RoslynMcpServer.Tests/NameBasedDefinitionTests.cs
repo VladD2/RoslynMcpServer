@@ -53,7 +53,7 @@ public sealed class NameBasedDefinitionTests
     {
         using var search = AdhocSearchTool.Create(SingleSource);
 
-        var result = await search.Tool.FindSymbolDefinition(symbolName: "Widget");
+        var result = await search.Tool.FindSymbolDefinition(symbolName: "Widget", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("## Definition for `Widget`", result, StringComparison.Ordinal);
         Assert.Contains("Found **1** source location(s)", result, StringComparison.Ordinal);
@@ -67,7 +67,7 @@ public sealed class NameBasedDefinitionTests
     {
         using var search = AdhocSearchTool.Create(MultipleSource);
 
-        var result = await search.Tool.FindSymbolDefinition(symbolName: "Guard");
+        var result = await search.Tool.FindSymbolDefinition(symbolName: "Guard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("2 declaration(s) match `Guard`", result, StringComparison.Ordinal);
         Assert.Contains("| FQN | File | Line:Col |", result, StringComparison.Ordinal);
@@ -84,7 +84,7 @@ public sealed class NameBasedDefinitionTests
     {
         using var search = AdhocSearchTool.Create(MultipleSource);
 
-        var result = await search.Tool.FindSymbolDefinition(symbolName: "Ns1.Guard");
+        var result = await search.Tool.FindSymbolDefinition(symbolName: "Ns1.Guard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("## Definition for `Ns1.Guard`", result, StringComparison.Ordinal);
         Assert.Contains("FQN: global::Ns1.Guard", result, StringComparison.Ordinal);
@@ -96,7 +96,7 @@ public sealed class NameBasedDefinitionTests
     {
         using var search = AdhocSearchTool.Create(SingleSource);
 
-        var result = await search.Tool.FindSymbolDefinition(symbolName: "Nope");
+        var result = await search.Tool.FindSymbolDefinition(symbolName: "Nope", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("No declarations found for `Nope`", result, StringComparison.Ordinal);
     }
@@ -106,7 +106,7 @@ public sealed class NameBasedDefinitionTests
     {
         using var search = AdhocSearchTool.Create(MultipleSource);
 
-        var result = await search.Tool.FindSymbolDefinition(symbolName: "Guard", line: 3);
+        var result = await search.Tool.FindSymbolDefinition(symbolName: "Guard", line: 3, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("Error: `line`/`column` require `filePath`. For name-based search, omit them.", result, StringComparison.Ordinal);
     }
@@ -116,7 +116,7 @@ public sealed class NameBasedDefinitionTests
     {
         using var search = AdhocSearchTool.Create(MultipleSource);
 
-        var result = await search.Tool.FindSymbolDefinition();
+        var result = await search.Tool.FindSymbolDefinition(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("Error: provide `symbolName`.", result, StringComparison.Ordinal);
     }

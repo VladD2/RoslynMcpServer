@@ -276,7 +276,8 @@ public sealed class DirectOnlyFindReferencesTests : IClassFixture<DirectOnlyFind
         var declaration = PositionOf(SourceA, "public override void ApplyChanges()");
 
         var result = await _fixture.Navigation.FindSymbolReferences(
-            _fixture.SourcePathA, symbolName: "ApplyChanges", line: declaration.Line, directOnly: true);
+            _fixture.SourcePathA, symbolName: "ApplyChanges", line: declaration.Line, directOnly: true,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         // Only the cross-project call whose receiver type is Derived (B.cs:7) is direct;
         // `base.ApplyChanges()` inside the override (A.cs:10) and the Base-receiver call (B.cs:17)
@@ -293,7 +294,8 @@ public sealed class DirectOnlyFindReferencesTests : IClassFixture<DirectOnlyFind
         var declaration = PositionOf(SourceA, "public override void ApplyChanges()");
 
         var result = await _fixture.Navigation.FindSymbolReferences(
-            _fixture.SourcePathA, symbolName: "ApplyChanges", line: declaration.Line);
+            _fixture.SourcePathA, symbolName: "ApplyChanges", line: declaration.Line,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         // All 3 family call sites are reported; exactly 2 are dispatch sites (Base receivers).
         Assert.Contains("Found **3** reference location(s).", result);

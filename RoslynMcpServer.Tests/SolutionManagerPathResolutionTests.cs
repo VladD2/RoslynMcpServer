@@ -107,7 +107,8 @@ public sealed class SolutionManagerPathResolutionTests
             var result = await tool.GetMethodBody(
                 "src/BrqMover.Application/Services/TopLevelMoveFlagsAnnotator.cs",
                 "TopLevelMoveFlagsAnnotator",
-                "Apply");
+                "Apply",
+                cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.DoesNotContain("File not found", result, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("void Apply()", result, StringComparison.Ordinal);

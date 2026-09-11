@@ -11,7 +11,7 @@ public sealed class CodeSkeletonToolsTests
     {
         var tool = new CodeSkeletonTools(NullLogger<CodeSkeletonTools>.Instance);
 
-        var result = await tool.GetCodeSkeleton(path: null);
+        var result = await tool.GetCodeSkeleton(path: null, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("`path` is required", result, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("decompile_type", result, StringComparison.OrdinalIgnoreCase);

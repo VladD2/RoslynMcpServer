@@ -30,7 +30,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
         try
         {
-            var solution = await manager.GetCurrentSolutionAfterDiskSyncAsync();
+            var solution = await manager.GetCurrentSolutionAfterDiskSyncAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             // Nothing was loaded explicitly: the solution-wide entry point loads the configured workspace itself.
             Assert.NotNull(solution);
@@ -39,12 +39,12 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
 
             // A solution-wide tool works right after the lazy load.
             var tool = new NavigationTools(manager, config, NullLogger<NavigationTools>.Instance);
-            var result = await tool.FindSymbolReferences(symbolName: "ConfigThing");
+            var result = await tool.FindSymbolReferences(symbolName: "ConfigThing", cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("global::ConfigNs.ConfigThing", result);
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -56,7 +56,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         try
         {
             // The closest .csproj to the file is Deep.csproj (walk-up), but the config `workspace-path` wins.
-            var document = await manager.FindDocumentAsync(_fixture.DeepSourcePath);
+            var document = await manager.FindDocumentAsync(_fixture.DeepSourcePath, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(Path.GetFullPath(_fixture.ConfigProjectPath), manager.GetLoadedWorkspacePath(), StringComparer.OrdinalIgnoreCase);
             var solution = manager.GetCurrentSolution();
@@ -67,7 +67,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -80,7 +80,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         {
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-            var result = await tools.Reload();
+            var result = await tools.Reload(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Successfully loaded workspace", result);
             Assert.Contains("- Config [Library]", result);
@@ -88,7 +88,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -101,7 +101,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         {
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-            var result = await tools.Reload(workspacePath: _fixture.DeepProjectPath);
+            var result = await tools.Reload(workspacePath: _fixture.DeepProjectPath, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Successfully loaded workspace", result);
             Assert.Contains("- Deep [Library]", result);
@@ -109,7 +109,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -132,7 +132,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
             var deadline = DateTime.UtcNow.AddSeconds(60);
             while (!loadTask.IsCompleted && DateTime.UtcNow < deadline)
             {
-                await Task.Delay(25);
+                await Task.Delay(25, cancellationToken: TestContext.Current.CancellationToken);
             }
 
             if (loadTask.IsCompleted)
@@ -158,7 +158,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -171,7 +171,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
         try
         {
-            var document = await manager.FindDocumentAsync(_fixture.DeepSourcePath);
+            var document = await manager.FindDocumentAsync(_fixture.DeepSourcePath, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.NotNull(document);
             // The walk-up candidate (Deep.csproj) is loaded, not the broken config path.
@@ -179,7 +179,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -206,7 +206,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
                 try
                 {
                     Environment.CurrentDirectory = _fixture.Root;
-                    loadTask = manager.GetCurrentSolutionAfterDiskSyncAsync();
+                    loadTask = manager.GetCurrentSolutionAfterDiskSyncAsync(cancellationToken: TestContext.Current.CancellationToken);
                 }
                 finally
                 {
@@ -222,7 +222,7 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -234,14 +234,14 @@ public sealed class WorkspaceConfigLazyLoadTests : IClassFixture<WorkspaceConfig
         var manager = new SolutionManager(NullLogger<SolutionManager>.Instance, config);
         try
         {
-            var solution = await manager.GetCurrentSolutionAfterDiskSyncAsync();
+            var solution = await manager.GetCurrentSolutionAfterDiskSyncAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Null(solution);
             Assert.Null(manager.GetLoadedWorkspacePath());
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 

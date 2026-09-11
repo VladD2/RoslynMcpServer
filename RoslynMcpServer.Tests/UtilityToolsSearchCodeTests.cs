@@ -41,7 +41,7 @@ public sealed class UtilityToolsSearchCodeTests
 
                     var manager = CreateManagerWithLoadedPath(Path.Combine(workspaceRoot, "App.sln"));
                     var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
-                    searchTask = tool.SearchCode("next version");
+                    searchTask = tool.SearchCode("next version", cancellationToken: TestContext.Current.CancellationToken);
                 }
                 finally
                 {
@@ -83,7 +83,7 @@ public sealed class UtilityToolsSearchCodeTests
             Directory.CreateDirectory(Path.Combine(workspaceRoot, "src"));
             File.WriteAllText(Path.Combine(workspaceRoot, "src", "a.cs"), "// next version line");
 
-            var result = await tool.SearchCode("next version", maxResults: 1, maxScanSeconds: 1);
+            var result = await tool.SearchCode("next version", maxResults: 1, maxScanSeconds: 1, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Found 1 match(es)", result, StringComparison.Ordinal);
         }
         finally
@@ -108,10 +108,10 @@ public sealed class UtilityToolsSearchCodeTests
             Directory.CreateDirectory(Path.Combine(workspaceRoot, "src"));
             File.WriteAllText(Path.Combine(workspaceRoot, "src", "a.csv"), "next version line");
 
-            var defaultResult = await tool.SearchCode("next version");
+            var defaultResult = await tool.SearchCode("next version", cancellationToken: TestContext.Current.CancellationToken);
             Assert.DoesNotContain("a.csv", defaultResult, StringComparison.OrdinalIgnoreCase);
 
-            var csvResult = await tool.SearchCode("next version", includeExtensions: ".csv");
+            var csvResult = await tool.SearchCode("next version", includeExtensions: ".csv", cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("a.csv", csvResult, StringComparison.OrdinalIgnoreCase);
         }
         finally
@@ -136,13 +136,13 @@ public sealed class UtilityToolsSearchCodeTests
             Directory.CreateDirectory(Path.Combine(workspaceRoot, "src"));
             File.WriteAllText(Path.Combine(workspaceRoot, "src", "a.cs"), "// DupFinder leftover check");
 
-            var insensitive = await tool.SearchCode("dupFinder", caseSensitive: false);
+            var insensitive = await tool.SearchCode("dupFinder", caseSensitive: false, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Found 1 match(es)", insensitive, StringComparison.Ordinal);
 
-            var sensitive = await tool.SearchCode("dupFinder", caseSensitive: true);
+            var sensitive = await tool.SearchCode("dupFinder", caseSensitive: true, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("No matches found", sensitive, StringComparison.Ordinal);
 
-            var exact = await tool.SearchCode("DupFinder", caseSensitive: true);
+            var exact = await tool.SearchCode("DupFinder", caseSensitive: true, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Found 1 match(es)", exact, StringComparison.Ordinal);
         }
         finally
@@ -167,10 +167,10 @@ public sealed class UtilityToolsSearchCodeTests
             Directory.CreateDirectory(Path.Combine(workspaceRoot, "src"));
             File.WriteAllText(Path.Combine(workspaceRoot, "src", "a.cs"), "// DupFinder");
 
-            var insensitive = await tool.SearchCode("dupFinder", useRegex: true, caseSensitive: false);
+            var insensitive = await tool.SearchCode("dupFinder", useRegex: true, caseSensitive: false, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("Found 1 match(es)", insensitive, StringComparison.Ordinal);
 
-            var sensitive = await tool.SearchCode("dupFinder", useRegex: true, caseSensitive: true);
+            var sensitive = await tool.SearchCode("dupFinder", useRegex: true, caseSensitive: true, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("No matches found", sensitive, StringComparison.Ordinal);
         }
         finally
@@ -209,12 +209,12 @@ public sealed class UtilityToolsSearchCodeTests
                 Path.Combine(treeB, "CompB", "B.csproj"));
             var tool = new UtilityTools(NullLogger<UtilityTools>.Instance, manager, new WorkspaceConfig(new ConfigurationBuilder().Build()));
 
-            var resultA = await tool.SearchCode("marker only in tree A");
+            var resultA = await tool.SearchCode("marker only in tree A", cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("a.cs", resultA, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("b.cs", resultA, StringComparison.OrdinalIgnoreCase);
 
             // tree B lives outside the .sln folder — the original bug missed it.
-            var resultB = await tool.SearchCode("marker only in tree B");
+            var resultB = await tool.SearchCode("marker only in tree B", cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains("b.cs", resultB, StringComparison.OrdinalIgnoreCase);
         }
         finally

@@ -44,7 +44,7 @@ public sealed class SearchOverflowTests
         using var search = AdhocSearchTool.Create(Source);
         try
         {
-            var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", maxResults: 2);
+            var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", maxResults: 2, cancellationToken: TestContext.Current.CancellationToken);
 
             // Short response: count + path, not the full result.
             Assert.Contains("Found **3** element(s)", result, StringComparison.Ordinal);
@@ -83,7 +83,7 @@ public sealed class SearchOverflowTests
         try
         {
             // No maxResults argument — the cap comes from the config `max-results`.
-            var result = await search.Tool.FindSymbolReferences(symbolName: "Widget");
+            var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Found **3** element(s)", result, StringComparison.Ordinal);
             Assert.Contains("exceeding the cap of 2", result, StringComparison.Ordinal);
@@ -108,7 +108,7 @@ public sealed class SearchOverflowTests
         using var search = AdhocSearchTool.Create(Source);
         var before = SnapshotOverflowDirs();
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", maxResults: 10);
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", maxResults: 10, cancellationToken: TestContext.Current.CancellationToken);
 
         // Inline (non-overflow) output with all positions.
         Assert.DoesNotContain("exceeding the cap", result, StringComparison.Ordinal);

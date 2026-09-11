@@ -66,7 +66,7 @@ public sealed class FindSymbolReferencesGroupingTests
     {
         using var search = AdhocSearchTool.Create(TwoDeclarationsSource);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "FastGlobGrep");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "FastGlobGrep", cancellationToken: TestContext.Current.CancellationToken);
 
         // Summary table with one row per declaration FQN (the First column disambiguates identical FQNs,
         // e.g. method overloads in the same type).
@@ -132,7 +132,7 @@ public sealed class FindSymbolReferencesGroupingTests
     {
         using var search = AdhocSearchTool.Create(TwoMemberDeclarationsSource);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "FastGlobGrep");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "FastGlobGrep", cancellationToken: TestContext.Current.CancellationToken);
 
         // Table rows include the declaring type (owner), not the bare member name; the First column
         // carries the first reference position.
@@ -162,7 +162,7 @@ public sealed class FindSymbolReferencesGroupingTests
     {
         using var search = AdhocSearchTool.Create(OneDeclarationSource);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.DoesNotContain("| FQN | References |", result, StringComparison.Ordinal);
         Assert.DoesNotContain("declaration(s) match this name", result, StringComparison.Ordinal);

@@ -89,7 +89,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
         var usage = PositionOf(Source, "s.Work();", charOffset: 2);
         var otherUsage = PositionOf(Source, "s.Work(5);", charOffset: 2);
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: usage.Line, column: usage.Column);
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: usage.Line, column: usage.Column, cancellationToken: TestContext.Current.CancellationToken);
 
         // The position on the usage resolves to the declared overload `Work()`: its usage is reported,
         // the other overload's usage is not. (Roslyn 5.9 FindReferencesAsync reports usage locations only —
@@ -105,7 +105,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
         var declaration = PositionOf(Source, "void Work()", charOffset: 5);
         var usage = PositionOf(Source, "s.Work();", charOffset: 2);
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: declaration.Line, column: declaration.Column);
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: declaration.Line, column: declaration.Column, cancellationToken: TestContext.Current.CancellationToken);
 
         // A position on the declaration gives the same declared symbol as a position on its usage:
         // the same header (minimally qualified name) and the same reference set.
@@ -120,7 +120,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
         var usage = PositionOf(Source, "s.Work(5);", charOffset: 2);
         var otherUsage = PositionOf(Source, "s.Work();", charOffset: 2);
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: declaration.Line, column: declaration.Column);
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: declaration.Line, column: declaration.Column, cancellationToken: TestContext.Current.CancellationToken);
 
         // The two methods share the name `Work` on different lines; the position selects `Work(int)`.
         Assert.Contains("References for `int Service.Work(int x)`", result);
@@ -136,7 +136,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
         // reported (or none at all).
         var usage = PositionOf(Source, "s.Work(5);", charOffset: 2);
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: usage.Line, column: usage.Column);
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: usage.Line, column: usage.Column, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("References for `int Service.Work(int x)`", result);
         Assert.DoesNotContain("No symbol found", result);
@@ -148,7 +148,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
     {
         var usage = PositionOf(Source, "s.Name", charOffset: 2);
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "Name");
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "Name", cancellationToken: TestContext.Current.CancellationToken);
 
         // Extended FindDeclarationMatches: a property declaration is matched by name (and resolved to the
         // property symbol — the header carries the plain name, no `void Service.`-style method qualifier).
@@ -161,7 +161,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
     {
         var usage = PositionOf(Source, "_counter++");
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "_counter");
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "_counter", cancellationToken: TestContext.Current.CancellationToken);
 
         // Extended FindDeclarationMatches: a field declaration (variable) is matched by name.
         Assert.Contains("References for `_counter`", result);
@@ -173,7 +173,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
     {
         var usage = PositionOf(Source, "s.Ping", charOffset: 2);
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "Ping");
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "Ping", cancellationToken: TestContext.Current.CancellationToken);
 
         // Extended FindDeclarationMatches: an event declaration (EventDeclarationSyntax) is matched by name.
         Assert.DoesNotContain("was not found as a declaration", result);
@@ -186,7 +186,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
         var declaration = PositionOf(Source, "public Service()", charOffset: 7);
         var usage = PositionOf(Source, "new Service()", charOffset: 4);
 
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: declaration.Line, column: declaration.Column);
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, line: declaration.Line, column: declaration.Column, cancellationToken: TestContext.Current.CancellationToken);
 
         // The position selects the constructor, not the same-named class declaration (the class header would
         // be a bare `Service`, without the `Service.Service()` constructor qualifier).
@@ -200,7 +200,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
         // A constructor always shares its name with the class declaration, so without a position the extended
         // matcher (ClassDeclarationSyntax + ConstructorDeclarationSyntax) reports both as candidates —
         // proof that the constructor kind is matched.
-        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "Service");
+        var result = await _fixture.Navigation.FindSymbolReferences(_fixture.SourcePath, symbolName: "Service", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("matches 2 declarations", result);
         Assert.Contains("global::PosNs.Service —", result);
@@ -216,7 +216,8 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
         var otherUsage = PositionOf(Source, "s.Work();", charOffset: 2);
 
         var result = await _fixture.Utility.RenameSymbol(
-            _fixture.SourcePath, "Work", "WorkInt", line: declaration.Line, column: declaration.Column, previewOnly: true);
+            _fixture.SourcePath, "Work", "WorkInt", line: declaration.Line, column: declaration.Column, previewOnly: true,
+            cancellationToken: TestContext.Current.CancellationToken);
 
         // The preview lists the affected locations of the selected overload only (`Work(int)` usage; the
         // other overload's declaration/usage and this one's declaration are absent).
@@ -233,7 +234,7 @@ public sealed class PositionSymbolTests : IClassFixture<PositionSymbolTests.Fixt
         var workOne = PositionOf(Source, "void Work()", charOffset: 5);
         var workTwo = PositionOf(Source, "int Work(", charOffset: 4);
 
-        var result = await _fixture.Utility.RenameSymbol(_fixture.SourcePath, "Work", "WorkRenamed", previewOnly: true);
+        var result = await _fixture.Utility.RenameSymbol(_fixture.SourcePath, "Work", "WorkRenamed", previewOnly: true, cancellationToken: TestContext.Current.CancellationToken);
 
         // No blind first match: two `Work` declarations in the file → error with both candidates
         // (FQN display + line:col of each declaration).

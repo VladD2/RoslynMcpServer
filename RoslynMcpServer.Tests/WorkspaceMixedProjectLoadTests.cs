@@ -33,7 +33,7 @@ public sealed class WorkspaceMixedProjectLoadTests : IClassFixture<WorkspaceMixe
         {
             var tools = new WorkspaceTools(manager, config, NullLogger<WorkspaceTools>.Instance);
 
-            var result = await tools.LoadWorkspace(_fixture.SolutionPath);
+            var result = await tools.LoadWorkspace(_fixture.SolutionPath, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Successfully loaded workspace", result, StringComparison.Ordinal);
             Assert.DoesNotContain("Workspace Load Failed", result, StringComparison.Ordinal);
@@ -44,7 +44,7 @@ public sealed class WorkspaceMixedProjectLoadTests : IClassFixture<WorkspaceMixe
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 

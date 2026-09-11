@@ -122,7 +122,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindSymbolReferences(symbolName: "global::Ns1.Guard");
+        var result = await tool.FindSymbolReferences(symbolName: "global::Ns1.Guard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("`global::Ns1.Guard`", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.Guard", result, StringComparison.Ordinal);
@@ -133,7 +133,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindSymbolReferences(symbolName: "Ns9.Guard");
+        var result = await tool.FindSymbolReferences(symbolName: "Ns9.Guard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("FQN `Ns9.Guard` was not found", result, StringComparison.Ordinal);
         Assert.Contains("simple name `Guard`", result, StringComparison.Ordinal);
@@ -147,7 +147,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindSymbolReferences(symbolName: "Guard");
+        var result = await tool.FindSymbolReferences(symbolName: "Guard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("Ns1.Guard", result, StringComparison.Ordinal);
         Assert.Contains("Ns2.Guard", result, StringComparison.Ordinal);
@@ -158,7 +158,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindImplementations("global::Ns1.IGuard");
+        var result = await tool.FindImplementations("global::Ns1.IGuard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("`global::Ns1.IGuard`", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.IGuard", result, StringComparison.Ordinal);
@@ -169,7 +169,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindImplementations("Ns9.IGuard");
+        var result = await tool.FindImplementations("Ns9.IGuard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("FQN `Ns9.IGuard` was not found", result, StringComparison.Ordinal);
         Assert.Contains("`global::Ns1.IGuard`", result, StringComparison.Ordinal);
@@ -181,7 +181,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindSymbolReferences(symbolName: "Ns1.Guard.Run");
+        var result = await tool.FindSymbolReferences(symbolName: "Ns1.Guard.Run", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("`global::Ns1.Guard.Run`", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.Guard.Run", result, StringComparison.Ordinal);
@@ -192,7 +192,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindSymbolReferences(symbolName: "Ns9.Guard.Run");
+        var result = await tool.FindSymbolReferences(symbolName: "Ns9.Guard.Run", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("FQN `Ns9.Guard.Run` was not found", result, StringComparison.Ordinal);
         Assert.Contains("simple name `Run`", result, StringComparison.Ordinal);
@@ -206,7 +206,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindSymbolReferences(symbolName: "Ns1.Guard");
+        var result = await tool.FindSymbolReferences(symbolName: "Ns1.Guard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("`global::Ns1.Guard`", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.Guard", result, StringComparison.Ordinal);
@@ -217,7 +217,7 @@ public sealed class FqnResolutionTests : IDisposable
     {
         var tool = CreateTool();
 
-        var result = await tool.FindImplementations("Ns1.IGuard");
+        var result = await tool.FindImplementations("Ns1.IGuard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("`global::Ns1.IGuard`", result, StringComparison.Ordinal);
         Assert.DoesNotContain("Ns2.IGuard", result, StringComparison.Ordinal);

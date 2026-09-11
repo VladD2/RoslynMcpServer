@@ -108,7 +108,7 @@ public sealed class SearchOutputFormatTests
         {
             // line 17 (`return LongPathFile.IsPathValid("x");`), no column: the column is computed from the
             // first `IsPathValid` on that line and must resolve the invoked static method, not the other type.
-            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 17);
+            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 17, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("FQN: global::Def.LongPathFile.IsPathValid", result, StringComparison.Ordinal);
             Assert.Contains("Line: 5", result, StringComparison.Ordinal);
@@ -128,7 +128,8 @@ public sealed class SearchOutputFormatTests
         {
             // line 17, column 33 = the `I` of `IsPathValid` on that line.
             var result = await workspace.Tool.FindSymbolDefinition(
-                workspace.SourcePath, symbolName: "IsPathValid", line: 17, column: 33);
+                workspace.SourcePath, symbolName: "IsPathValid", line: 17, column: 33,
+                cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("FQN: global::Def.LongPathFile.IsPathValid", result, StringComparison.Ordinal);
             Assert.DoesNotContain("OtherValidator.IsPathValid", result, StringComparison.Ordinal);
@@ -145,7 +146,7 @@ public sealed class SearchOutputFormatTests
         var workspace = await RealWorkspaceSearchTool.CreateAsync(DefinitionSource);
         try
         {
-            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 17);
+            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 17, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("FQN: global::Def.LongPathFile.IsPathValid", result, StringComparison.Ordinal);
             Assert.Contains("Line: 5", result, StringComparison.Ordinal);
@@ -165,7 +166,7 @@ public sealed class SearchOutputFormatTests
         var workspace = await RealWorkspaceSearchTool.CreateAsync(DefinitionSource);
         try
         {
-            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, line: 17);
+            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, line: 17, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Error:", result, StringComparison.Ordinal);
         }
@@ -183,7 +184,7 @@ public sealed class SearchOutputFormatTests
         {
             // `IsPathValid` does not occur on line 15 (`public static bool Check()`), but it does occur
             // in the enclosing member's body (the `Check` call on line 17) — the fallback resolves that symbol.
-            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 15);
+            var result = await workspace.Tool.FindSymbolDefinition(workspace.SourcePath, symbolName: "IsPathValid", line: 15, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("FQN: global::Def.LongPathFile.IsPathValid", result, StringComparison.Ordinal);
             Assert.DoesNotContain("OtherValidator.IsPathValid", result, StringComparison.Ordinal);
@@ -199,7 +200,7 @@ public sealed class SearchOutputFormatTests
     {
         using var search = AdhocSearchTool.Create(UsagesSource);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget");
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", cancellationToken: TestContext.Current.CancellationToken);
 
         // 1-based line:col position, no source line text by default.
         Assert.Contains("- 12:25", result, StringComparison.Ordinal);
@@ -211,7 +212,7 @@ public sealed class SearchOutputFormatTests
     {
         using var search = AdhocSearchTool.Create(UsagesSource);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", preview: true);
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", preview: true, cancellationToken: TestContext.Current.CancellationToken);
 
         // Position is still present, plus the trimmed source line text.
         Assert.Contains("- 12:25", result, StringComparison.Ordinal);
@@ -244,7 +245,7 @@ public sealed class SearchOutputFormatTests
 
         using var search = AdhocSearchTool.Create(source);
 
-        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", preview: true);
+        var result = await search.Tool.FindSymbolReferences(symbolName: "Widget", preview: true, cancellationToken: TestContext.Current.CancellationToken);
 
         var previewText = ExtractPreviewText(result, "- 12:25");
         Assert.True(previewText.Length <= 401, $"preview text exceeds the 400-char cap: {previewText.Length}");
@@ -257,7 +258,7 @@ public sealed class SearchOutputFormatTests
         var workspace = await RealWorkspaceSearchTool.CreateAsync(ReferencesSource);
         try
         {
-            var result = await workspace.Tool.FindSymbolReferences(workspace.SourcePath, symbolName: "Target");
+            var result = await workspace.Tool.FindSymbolReferences(workspace.SourcePath, symbolName: "Target", cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("File:", result, StringComparison.Ordinal);
             Assert.Contains("- 12:25", result, StringComparison.Ordinal);
@@ -278,7 +279,7 @@ public sealed class SearchOutputFormatTests
         {
             // line 14 (`t.Work()`), no column: the column is computed from the first `Work` on that line and
             // resolves the `Target.Work` method; its invocation on line 14 is reported.
-            var result = await workspace.Tool.FindSymbolReferences(workspace.SourcePath, symbolName: "Work", line: 14);
+            var result = await workspace.Tool.FindSymbolReferences(workspace.SourcePath, symbolName: "Work", line: 14, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("Target.Work", result, StringComparison.Ordinal);
             Assert.Contains("- 14:15", result, StringComparison.Ordinal);
@@ -294,7 +295,7 @@ public sealed class SearchOutputFormatTests
     {
         using var search = AdhocSearchTool.Create(ImplementationsSource);
 
-        var result = await search.Tool.FindImplementations("IGuard");
+        var result = await search.Tool.FindImplementations("IGuard", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("GuardImpl", result, StringComparison.Ordinal);
         // Each result is `path:line:col` (1-based).

@@ -38,7 +38,7 @@ public sealed class SolutionManagerExternalRootWatchTests : IClassFixture<Soluti
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
@@ -74,12 +74,12 @@ public sealed class SolutionManagerExternalRootWatchTests : IClassFixture<Soluti
             Assert.NotNull(added);
 
             // (c) clear stops all watchers and drops the cached roots
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Empty(manager.WatchRoots);
         }
         finally
         {
-            await manager.ClearWorkspaceAsync();
+            await manager.ClearWorkspaceAsync(cancellationToken: TestContext.Current.CancellationToken);
         }
     }
 
