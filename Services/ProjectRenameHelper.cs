@@ -8,7 +8,7 @@ namespace RoslynMcpServer.Services;
 /// Renames an SDK-style project directory + .csproj and updates ProjectReference / .sln / .slnx graph entries.
 /// Does not rename C# namespaces or types — use <c>rename_symbol</c> after reload.
 /// </summary>
-public static class ProjectRenameHelper
+public static partial class ProjectRenameHelper
 {
     private static readonly HashSet<string> ExcludedDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -21,9 +21,8 @@ public static class ProjectRenameHelper
         "packages",
     };
 
-    private static readonly Regex SlnProjectLine = new(
-        @"^Project\(""(?<type>\{[^""]+\})""\)\s*=\s*""(?<name>[^""]+)""\s*,\s*""(?<path>[^""]+)""\s*,\s*""(?<guid>\{[^""]+\})""",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^Project\(""(?<type>\{[^""]+\})""\)\s*=\s*""(?<name>[^""]+)""\s*,\s*""(?<path>[^""]+)""\s*,\s*""(?<guid>\{[^""]+\})""", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex SlnProjectLine();
 
     private static readonly StringComparison PathComparison =
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -432,7 +431,7 @@ public static class ProjectRenameHelper
 
         for (var i = 0; i < lines.Length; i++)
         {
-            var match = SlnProjectLine.Match(lines[i]);
+            var match = SlnProjectLine().Match(lines[i]);
             if (!match.Success)
             {
                 continue;

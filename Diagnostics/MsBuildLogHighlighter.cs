@@ -4,39 +4,32 @@ using System.Text.RegularExpressions;
 namespace RoslynMcpServer.Diagnostics;
 
 /// <summary>Extracts MSBuild/NuGet highlights and task-failure context from verbose dotnet logs.</summary>
-public static class MsBuildLogHighlighter
+public static partial class MsBuildLogHighlighter
 {
     private const int ContextLinesBeforeTaskFailure = 20;
     private const int MaxHighlightLines = 50;
     private const int ScanBackwardForProjectLines = 60;
 
-    private static readonly Regex MsBuildExecutablePath = new(
-        @"MSBuild executable path\s*=\s*(?<path>.+)$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"MSBuild executable path\s*=\s*(?<path>.+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MsBuildExecutablePath();
 
-    private static readonly Regex TaskFailedLine = new(
-        @"Done executing task ""(?<task>[^""]+)"" -- FAILED",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Done executing task ""(?<task>[^""]+)"" -- FAILED", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TaskFailedLine();
 
-    private static readonly Regex BareTaskFailedLine = new(
-        @"^(?<task>.+?) -- FAILED\.?$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^(?<task>.+?) -- FAILED\.?$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex BareTaskFailedLine();
 
-    private static readonly Regex IssueCodeLine = new(
-        @"(?<sev>error|warning)\s+(?<code>(?:MSB|NU)\d+)\s*:",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"(?<sev>error|warning)\s+(?<code>(?:MSB|NU)\d+)\s*:", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex IssueCodeLine();
 
-    private static readonly Regex BuildingProject = new(
-        @"Building project ""(?<proj>[^""]+)""",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Building project ""(?<proj>[^""]+)""", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex BuildingProject();
 
-    private static readonly Regex ProjectInLog = new(
-        @"Project ""(?<proj>[^""]+)""",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Project ""(?<proj>[^""]+)""", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ProjectInLog();
 
-    private static readonly Regex TargetInProject = new(
-        @"Target ""(?<target>[^""]+)"" in project ""(?<proj>[^""]+)""",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Target ""(?<target>[^""]+)"" in project ""(?<proj>[^""]+)""", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TargetInProject();
 
     public static string? TryGetMsBuildExecutablePath(string combinedOutput)
     {
@@ -47,7 +40,7 @@ public static class MsBuildLogHighlighter
 
         foreach (var raw in combinedOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
-            var match = MsBuildExecutablePath.Match(raw.Trim());
+            var match = MsBuildExecutablePath().Match(raw.Trim());
             if (match.Success)
             {
                 return match.Groups["path"].Value.Trim();
@@ -99,12 +92,12 @@ public static class MsBuildLogHighlighter
                 continue;
             }
 
-            if (MsBuildExecutablePath.IsMatch(line))
+            if (MsBuildExecutablePath().IsMatch(line))
             {
                 Add(line);
             }
 
-            if (IssueCodeLine.IsMatch(line))
+            if (IssueCodeLine().IsMatch(line))
             {
                 Add(line);
             }
@@ -162,13 +155,13 @@ public static class MsBuildLogHighlighter
 
     private static string? TryGetFailedTaskName(string line)
     {
-        var done = TaskFailedLine.Match(line);
+        var done = TaskFailedLine().Match(line);
         if (done.Success)
         {
             return done.Groups["task"].Value;
         }
 
-        var bare = BareTaskFailedLine.Match(line);
+        var bare = BareTaskFailedLine().Match(line);
         if (bare.Success && !line.StartsWith("Build FAILED", StringComparison.OrdinalIgnoreCase))
         {
             return bare.Groups["task"].Value.Trim();
@@ -188,19 +181,19 @@ public static class MsBuildLogHighlighter
                 continue;
             }
 
-            var target = TargetInProject.Match(line);
+            var target = TargetInProject().Match(line);
             if (target.Success)
             {
                 return target.Groups["proj"].Value;
             }
 
-            var building = BuildingProject.Match(line);
+            var building = BuildingProject().Match(line);
             if (building.Success)
             {
                 return building.Groups["proj"].Value;
             }
 
-            var project = ProjectInLog.Match(line);
+            var project = ProjectInLog().Match(line);
             if (project.Success && project.Groups["proj"].Value.Contains('.', StringComparison.Ordinal))
             {
                 return project.Groups["proj"].Value;

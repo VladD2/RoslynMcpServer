@@ -10,7 +10,7 @@ namespace RoslynMcpServer.Services;
 /// The managed line-scan fallback in <see cref="Tools.UtilityTools"/> is used only when rg is
 /// unavailable on the machine.
 /// </summary>
-public static class RipgrepRunner
+public static partial class RipgrepRunner
 {
     /// <summary>
     /// Windows <c>CreateProcess</c> command-line limit is 32767 chars; keep headroom for the
@@ -19,14 +19,16 @@ public static class RipgrepRunner
     private const int MaxCommandLineChars = 24_000;
 
     /// <summary><c>--stats</c> line reporting how many files were searched (printed to stdout).</summary>
-    private static readonly Regex FilesSearchedRegex = new(@"^(\d+) files searched$", RegexOptions.Compiled);
+    [GeneratedRegex(@"^(\d+) files searched$", RegexOptions.Compiled)]
+    private static partial Regex FilesSearchedRegex();
 
     /// <summary>
     /// Match line <c>path:line:content</c>. Non-greedy path: Windows paths contain at most the
     /// drive-letter colon (a single character followed by a separator, never <c>:digits:</c>),
     /// so the first <c>:digits:</c> boundary is the line number.
     /// </summary>
-    private static readonly Regex MatchLineRegex = new(@"^(.*?):(\d+):(.*)$", RegexOptions.Compiled);
+    [GeneratedRegex(@"^(.*?):(\d+):(.*)$", RegexOptions.Compiled)]
+    private static partial Regex MatchLineRegex();
 
     /// <summary>One matched line: file path, 1-based line number, and the full line text.</summary>
     public sealed record Match(string FilePath, int LineNumber, string LineText);
@@ -258,12 +260,12 @@ public static class RipgrepRunner
         var matches = new List<Match>();
         foreach (var line in stdoutLines)
         {
-            if (FilesSearchedRegex.IsMatch(line))
+            if (FilesSearchedRegex().IsMatch(line))
             {
                 continue; // --stats line
             }
 
-            var match = MatchLineRegex.Match(line);
+            var match = MatchLineRegex().Match(line);
             if (!match.Success)
             {
                 continue; // other --stats lines (matched lines, bytes searched, elapsed, ...)
@@ -279,7 +281,7 @@ public static class RipgrepRunner
     {
         foreach (var line in stdoutLines)
         {
-            var match = FilesSearchedRegex.Match(line);
+            var match = FilesSearchedRegex().Match(line);
             if (match.Success)
             {
                 return int.Parse(match.Groups[1].Value);

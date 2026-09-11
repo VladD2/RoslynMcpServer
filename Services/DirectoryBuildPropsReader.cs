@@ -6,17 +6,15 @@ namespace RoslynMcpServer.Services;
 /// Reads <c>TargetFrameworks</c> / <c>TargetFramework</c> from the nearest <c>Directory.Build.props</c>
 /// for <c>reload</c> / lazy config load / <c>load_workspace</c> CrossTargeting guidance (not a full MSBuild evaluation).
 /// </summary>
-public static class DirectoryBuildPropsReader
+public static partial class DirectoryBuildPropsReader
 {
     public const int DefaultMaxEntries = 10;
 
-    private static readonly Regex TargetFrameworksElement = new(
-        @"<TargetFrameworks\s*>(?<value>[^<]+)</TargetFrameworks>",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"<TargetFrameworks\s*>(?<value>[^<]+)</TargetFrameworks>", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TargetFrameworksElement();
 
-    private static readonly Regex TargetFrameworkElement = new(
-        @"<TargetFramework\s*>(?<value>[^<]+)</TargetFramework>",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"<TargetFramework\s*>(?<value>[^<]+)</TargetFramework>", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TargetFrameworkElement();
 
     public static IReadOnlyList<string> ListTargetFrameworks(
         string? workspacePath,
@@ -73,8 +71,8 @@ public static class DirectoryBuildPropsReader
             return Array.Empty<string>();
         }
 
-        var raw = TryFirstValue(TargetFrameworksElement, propsXml)
-                  ?? TryFirstValue(TargetFrameworkElement, propsXml);
+        var raw = TryFirstValue(TargetFrameworksElement(), propsXml)
+                  ?? TryFirstValue(TargetFrameworkElement(), propsXml);
         if (raw is null)
         {
             return Array.Empty<string>();

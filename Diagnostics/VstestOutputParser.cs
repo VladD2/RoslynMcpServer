@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 namespace RoslynMcpServer.Diagnostics;
 
 /// <summary>Parses <c>dotnet test</c> console output (xUnit / VSTest / NUnit) and ignores MSBuild noise.</summary>
-public static class VstestOutputParser
+public static partial class VstestOutputParser
 {
     private const int MaxFailedTestDetails = 5;
     private const int MaxStackTraceLinesPerFailure = 15;
@@ -15,54 +15,42 @@ public static class VstestOutputParser
     private const string VstestDurationBracket =
         @"\[\d+(?:\.\d+)?\s*(?:ms|s|m|h)(?:\s+\d+(?:\.\d+)?\s*(?:ms|s|m|h))*\]";
 
-    private static readonly Regex RxXunitFailLine = new(
-        @"^\[xUnit\.net[^\]]*\]\s+(?<name>.+?)\s+\[FAIL\]\s*$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^\[xUnit\.net[^\]]*\]\s+(?<name>.+?)\s+\[FAIL\]\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex RxXunitFailLine();
 
-    private static readonly Regex RxVstestPassedLine = new(
-        $@"^\s+Passed\s+(?<name>[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]+)+)\s+{VstestDurationBracket}\s*$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^\s+Passed\s+(?<name>[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]+)+)\s+" + VstestDurationBracket + @"\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex RxVstestPassedLine();
 
-    private static readonly Regex RxVstestFailedLine = new(
-        $@"^\s+Failed\s+(?<name>[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]+)+)(?:\s+{VstestDurationBracket})?\s*$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^\s+Failed\s+(?<name>[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]+)+)(?:\s+" + VstestDurationBracket + @")?\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex RxVstestFailedLine();
 
-    private static readonly Regex RxNunitFailedLine = new(
-        @"^\s*Failed\s*:\s*(?<name>[A-Za-z_][\w]+(?:\.[A-Za-z_][\w]+)*)\s*$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^\s*Failed\s*:\s*(?<name>[A-Za-z_][\w]+(?:\.[A-Za-z_][\w]+)*)\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxNunitFailedLine();
 
-    private static readonly Regex RxEndSummaryLine = new(
-        @"(?<kind>Passed|Failed)!\s+-\s+Failed:\s*(?<failed>\d+),\s*Passed:\s*(?<passed>\d+)(?:,\s*Skipped:\s*(?<skipped>\d+))?(?:,\s*Total:\s*(?<total>\d+))?",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"(?<kind>Passed|Failed)!\s+-\s+Failed:\s*(?<failed>\d+),\s*Passed:\s*(?<passed>\d+)(?:,\s*Skipped:\s*(?<skipped>\d+))?(?:,\s*Total:\s*(?<total>\d+))?", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex RxEndSummaryLine();
 
-    private static readonly Regex RxEndSummaryLineAlt = new(
-        @"Passed!\s+-\s+Failed:\s*(?<failed>\d+),\s*Passed:\s*(?<passed>\d+)",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Passed!\s+-\s+Failed:\s*(?<failed>\d+),\s*Passed:\s*(?<passed>\d+)", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex RxEndSummaryLineAlt();
 
-    private static readonly Regex RxTotalTests = new(
-        @"Total tests:\s*(?<total>\d+)",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Total tests:\s*(?<total>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxTotalTests();
 
-    private static readonly Regex RxPassedCountLine = new(
-        @"^\s*Passed:\s*(?<n>\d+)\s*$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^\s*Passed:\s*(?<n>\d+)\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxPassedCountLine();
 
-    private static readonly Regex RxFailedCountLine = new(
-        @"^\s*Failed:\s*(?<n>\d+)\s*$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^\s*Failed:\s*(?<n>\d+)\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxFailedCountLine();
 
-    private static readonly Regex RxSkippedCountLine = new(
-        @"^\s*Skipped:\s*(?<n>\d+)\s*$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^\s*Skipped:\s*(?<n>\d+)\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxSkippedCountLine();
 
-    private static readonly Regex RxTestRunSuccessful = new(
-        @"Test Run Successful\.?",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Test Run Successful\.?", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxTestRunSuccessful();
 
     /// <summary>VSTest console block: Total tests + Passed (Failed/Skipped optional). Fail-only .slnx blocks are parsed line-wise.</summary>
-    private static readonly Regex RxVstestTotalsBlock = new(
-        @"Total tests:\s*(?<total>\d+)(?:[\s\S]{0,2000}?)\s+Passed:\s*(?<passed>\d+)",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Total tests:\s*(?<total>\d+)(?:[\s\S]{0,2000}?)\s+Passed:\s*(?<passed>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxVstestTotalsBlock();
 
     public sealed record TestSummary(int Total, int Passed, int Failed, int Skipped);
 
@@ -140,7 +128,7 @@ public static class VstestOutputParser
 
         foreach (var line in combinedOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
-            if (RxVstestPassedLine.IsMatch(line.TrimEnd())
+            if (RxVstestPassedLine().IsMatch(line.TrimEnd())
                 && line.Contains(needle, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
@@ -294,15 +282,15 @@ public static class VstestOutputParser
     }
 
     private static bool HasSummaryMarkers(string text) =>
-        RxEndSummaryLine.IsMatch(text)
-        || RxEndSummaryLineAlt.IsMatch(text)
-        || RxTotalTests.IsMatch(text)
-        || RxTestRunSuccessful.IsMatch(text)
-        || RxVstestTotalsBlock.IsMatch(text);
+        RxEndSummaryLine().IsMatch(text)
+        || RxEndSummaryLineAlt().IsMatch(text)
+        || RxTotalTests().IsMatch(text)
+        || RxTestRunSuccessful().IsMatch(text)
+        || RxVstestTotalsBlock().IsMatch(text);
 
     private static TestSummary? InferSummaryFromMarkers(string text)
     {
-        foreach (Match m in RxEndSummaryLine.Matches(text))
+        foreach (Match m in RxEndSummaryLine().Matches(text))
         {
             if (m.Success)
             {
@@ -310,7 +298,7 @@ public static class VstestOutputParser
             }
         }
 
-        var alt = RxEndSummaryLineAlt.Match(text);
+        var alt = RxEndSummaryLineAlt().Match(text);
         if (alt.Success)
         {
             var passed = int.Parse(alt.Groups["passed"].Value, CultureInfo.InvariantCulture);
@@ -335,7 +323,7 @@ public static class VstestOutputParser
         }
 
         Match? lastEnd = null;
-        foreach (Match m in RxEndSummaryLine.Matches(text))
+        foreach (Match m in RxEndSummaryLine().Matches(text))
         {
             lastEnd = m;
         }
@@ -345,7 +333,7 @@ public static class VstestOutputParser
             return SummaryFromEndMatch(lastEnd);
         }
 
-        var alt = RxEndSummaryLineAlt.Match(text);
+        var alt = RxEndSummaryLineAlt().Match(text);
         if (alt.Success)
         {
             var passed = int.Parse(alt.Groups["passed"].Value, CultureInfo.InvariantCulture);
@@ -353,17 +341,17 @@ public static class VstestOutputParser
             return new TestSummary(passed + failed, passed, failed, 0);
         }
 
-        var vstestBlock = RxVstestTotalsBlock.Match(text);
+        var vstestBlock = RxVstestTotalsBlock().Match(text);
         if (vstestBlock.Success)
         {
             var total = int.Parse(vstestBlock.Groups["total"].Value, CultureInfo.InvariantCulture);
             var passed = int.Parse(vstestBlock.Groups["passed"].Value, CultureInfo.InvariantCulture);
-            var failed = TryReadCountAfterTotalTests(text, RxFailedCountLine) ?? 0;
-            var skipped = TryReadCountAfterTotalTests(text, RxSkippedCountLine) ?? 0;
+            var failed = TryReadCountAfterTotalTests(text, RxFailedCountLine()) ?? 0;
+            var skipped = TryReadCountAfterTotalTests(text, RxSkippedCountLine()) ?? 0;
             return new TestSummary(total, passed, failed, skipped);
         }
 
-        if (RxTestRunSuccessful.IsMatch(text))
+        if (RxTestRunSuccessful().IsMatch(text))
         {
             var fromLines = TryParseVstestCountsFromLines(text);
             if (fromLines is not null)
@@ -375,7 +363,7 @@ public static class VstestOutputParser
         var lines = text.Split(['\r', '\n'], StringSplitOptions.None);
         for (var i = lines.Length - 1; i >= 0; i--)
         {
-            var tm = RxTotalTests.Match(lines[i].Trim());
+            var tm = RxTotalTests().Match(lines[i].Trim());
             if (!tm.Success)
             {
                 continue;
@@ -396,7 +384,7 @@ public static class VstestOutputParser
         var lines = text.Split(['\r', '\n'], StringSplitOptions.None);
         for (var i = lines.Length - 1; i >= 0; i--)
         {
-            if (!RxTotalTests.IsMatch(lines[i].Trim()))
+            if (!RxTotalTests().IsMatch(lines[i].Trim()))
             {
                 continue;
             }
@@ -409,7 +397,7 @@ public static class VstestOutputParser
 
     private static TestSummary? TryParseCountsNearTotalTestsLine(string[] lines, int totalTestsLineIndex)
     {
-        var tm = RxTotalTests.Match(lines[totalTestsLineIndex].Trim());
+        var tm = RxTotalTests().Match(lines[totalTestsLineIndex].Trim());
         if (!tm.Success)
         {
             return null;
@@ -423,19 +411,19 @@ public static class VstestOutputParser
         for (var j = totalTestsLineIndex; j < Math.Min(totalTestsLineIndex + 24, lines.Length); j++)
         {
             var line = lines[j].TrimEnd();
-            var pm = RxPassedCountLine.Match(line);
+            var pm = RxPassedCountLine().Match(line);
             if (pm.Success)
             {
                 passed = int.Parse(pm.Groups["n"].Value, CultureInfo.InvariantCulture);
             }
 
-            var fm = RxFailedCountLine.Match(line);
+            var fm = RxFailedCountLine().Match(line);
             if (fm.Success)
             {
                 failed = int.Parse(fm.Groups["n"].Value, CultureInfo.InvariantCulture);
             }
 
-            var sm = RxSkippedCountLine.Match(line);
+            var sm = RxSkippedCountLine().Match(line);
             if (sm.Success)
             {
                 skipped = int.Parse(sm.Groups["n"].Value, CultureInfo.InvariantCulture);
@@ -491,7 +479,7 @@ public static class VstestOutputParser
         var names = new List<string>();
         foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
-            var m = RxVstestPassedLine.Match(line.TrimEnd());
+            var m = RxVstestPassedLine().Match(line.TrimEnd());
             if (m.Success)
             {
                 names.Add(m.Groups["name"].Value.Trim());
@@ -551,21 +539,21 @@ public static class VstestOutputParser
             return false;
         }
 
-        var xm = RxXunitFailLine.Match(trimmed);
+        var xm = RxXunitFailLine().Match(trimmed);
         if (xm.Success)
         {
             name = xm.Groups["name"].Value.Trim();
             return IsPlausibleTestName(name);
         }
 
-        var nm = RxNunitFailedLine.Match(trimmed);
+        var nm = RxNunitFailedLine().Match(trimmed);
         if (nm.Success)
         {
             name = nm.Groups["name"].Value.Trim();
             return IsPlausibleTestName(name);
         }
 
-        var vm = RxVstestFailedLine.Match(trimmed);
+        var vm = RxVstestFailedLine().Match(trimmed);
         if (vm.Success)
         {
             name = vm.Groups["name"].Value.Trim();

@@ -9,7 +9,7 @@ namespace RoslynMcpServer.Services;
 /// Runs <c>dotnet build</c> with SDK pinning and escalates verbosity when diagnostics are missing.
 /// Overall wall-clock budget prevents multi-step NuGet hangs (~15 min).
 /// </summary>
-public static class DotNetBuildProbe
+public static partial class DotNetBuildProbe
 {
     public static readonly TimeSpan DefaultOverallBudget = TimeSpan.FromSeconds(300);
     public static readonly TimeSpan DefaultStepTimeout = TimeSpan.FromSeconds(180);
@@ -174,9 +174,8 @@ public static class DotNetBuildProbe
         return lastStepExitCode;
     }
 
-    private static readonly Regex BuildSectionExit = new(
-        @"---\s+dotnet build[^\r\n]*\(exit\s+(?<code>\d+)",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    [GeneratedRegex(@"---\s+dotnet build[^\r\n]*\(exit\s+(?<code>\d+)", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex BuildSectionExit();
 
     /// <summary>
     /// Returns the first non-zero exit from a <c>dotnet build</c> section header, if any.
@@ -189,7 +188,7 @@ public static class DotNetBuildProbe
             return null;
         }
 
-        foreach (Match match in BuildSectionExit.Matches(combinedLog))
+        foreach (Match match in BuildSectionExit().Matches(combinedLog))
         {
             if (int.TryParse(match.Groups["code"].Value, out var code) && code != 0)
             {
@@ -212,9 +211,8 @@ public static class DotNetBuildProbe
         return $"exec \"{pin.MsBuildDllPath}\" \"{projectOrSolutionPath}\" /restore /v:detailed /nologo";
     }
 
-    private static readonly Regex SectionNonZeroExit = new(
-        @"\(exit\s+(?<code>[1-9]\d*)",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"\(exit\s+(?<code>[1-9]\d*)", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex SectionNonZeroExit();
 
     internal static bool ShouldRunPinnedMsBuildRestore(string combinedSoFar, string workingDirectory)
     {
@@ -247,7 +245,7 @@ public static class DotNetBuildProbe
             return false;
         }
 
-        if (SectionNonZeroExit.IsMatch(combinedSoFar))
+        if (SectionNonZeroExit().IsMatch(combinedSoFar))
         {
             return true;
         }

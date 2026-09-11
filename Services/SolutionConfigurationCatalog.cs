@@ -4,13 +4,12 @@ using System.Xml.Linq;
 namespace RoslynMcpServer.Services;
 
 /// <summary>Reads solution configuration|platform pairs from <c>.sln</c> / <c>.slnx</c> for agent guidance.</summary>
-public static class SolutionConfigurationCatalog
+public static partial class SolutionConfigurationCatalog
 {
     public const int DefaultMaxEntries = 10;
 
-    private static readonly Regex SlnConfigLine = new(
-        @"^\s*(?<cfg>[^|=\r\n]+)\|(?<plat>[^=\r\n]+)=",
-        RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"^\s*(?<cfg>[^|=\r\n]+)\|(?<plat>[^=\r\n]+)=", RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex SlnConfigLine();
 
     public static IReadOnlyList<string> ListConfigurationPlatforms(
         string? solutionPath,
@@ -55,7 +54,7 @@ public static class SolutionConfigurationCatalog
         var block = end > start ? slnText[start..end] : slnText[start..];
         var found = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match m in SlnConfigLine.Matches(block))
+        foreach (Match m in SlnConfigLine().Matches(block))
         {
             var entry = $"{m.Groups["cfg"].Value.Trim()}|{m.Groups["plat"].Value.Trim()}";
             if (seen.Add(entry))

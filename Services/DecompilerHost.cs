@@ -7,11 +7,10 @@ using ICSharpCode.Decompiler.Metadata;
 namespace RoslynMcpServer.Services;
 
 /// <summary>Creates <see cref="CSharpDecompiler"/> instances with NuGet-aware assembly resolution.</summary>
-public static class DecompilerHost
+public static partial class DecompilerHost
 {
-    private static readonly Regex ResolutionAssemblyName = new(
-        @"Failed to resolve assembly:\s*'([^']+)'",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"Failed to resolve assembly:\s*'([^']+)'", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ResolutionAssemblyName();
 
     public static CSharpDecompiler Create(string dllPath)
     {
@@ -61,7 +60,7 @@ public static class DecompilerHost
             sb.Append($" Detected TFM: `{targetFramework}`.");
         }
 
-        var match = ResolutionAssemblyName.Match(ex.Message);
+        var match = ResolutionAssemblyName().Match(ex.Message);
         if (match.Success)
         {
             var assemblyRef = match.Groups[1].Value;

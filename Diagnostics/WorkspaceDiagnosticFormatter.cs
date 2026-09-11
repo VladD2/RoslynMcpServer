@@ -133,13 +133,12 @@ public static partial class WorkspaceDiagnosticFormatter
         || (message.Contains("The SDK", StringComparison.OrdinalIgnoreCase)
             && message.Contains("could not be found", StringComparison.OrdinalIgnoreCase));
 
-    private static readonly Regex RxProcessedProjectPath = new(
-        @"processing the file '(?<path>[^']+)'",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"processing the file '(?<path>[^']+)'", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RxProcessedProjectPath();
 
     public static string? TryGetProcessedProjectPath(string message)
     {
-        var m = RxProcessedProjectPath.Match(message);
+        var m = RxProcessedProjectPath().Match(message);
         return m.Success ? m.Groups["path"].Value : null;
     }
 

@@ -10,7 +10,7 @@ namespace RoslynMcpServer.Services;
 /// Applies <c>global.json</c> SDK pin to child <c>dotnet</c> processes, or clears inherited MSBuild SDK
 /// overrides so Locator/IDE pollution does not force an older SDK.
 /// </summary>
-public static class DotNetSdkEnvironment
+public static partial class DotNetSdkEnvironment
 {
     public const string SdkResolverSdksDirVariable = "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR";
     public const string SdkResolverSdksVerVariable = "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_VER";
@@ -21,9 +21,8 @@ public static class DotNetSdkEnvironment
     public const string MsBuildExtensionsPathVariable = "MSBuildExtensionsPath";
     public const string MsBuildSdksPathVariable = "MSBuildSDKsPath";
 
-    private static readonly Regex SdkFolderInPath = new(
-        @"[/\\]sdk[/\\](?<ver>\d+\.\d+\.\d+(?:[-\w.\+]*)?)[/\\]",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    [GeneratedRegex(@"[/\\]sdk[/\\](?<ver>\d+\.\d+\.\d+(?:[-\w.\+]*)?)[/\\]", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex SdkFolderInPath();
 
     /// <summary>
     /// Env vars that force MSBuild onto a specific SDK folder. <see cref="Microsoft.Build.Locator.MSBuildLocator"/>
@@ -167,7 +166,7 @@ public static class DotNetSdkEnvironment
             }
         }
 
-        var match = SdkFolderInPath.Match(combinedOutput);
+        var match = SdkFolderInPath().Match(combinedOutput);
         return match.Success ? match.Groups["ver"].Value : null;
     }
 
@@ -178,7 +177,7 @@ public static class DotNetSdkEnvironment
             return null;
         }
 
-        var match = SdkFolderInPath.Match(path.Replace('/', Path.DirectorySeparatorChar));
+        var match = SdkFolderInPath().Match(path.Replace('/', Path.DirectorySeparatorChar));
         return match.Success ? match.Groups["ver"].Value : null;
     }
 
