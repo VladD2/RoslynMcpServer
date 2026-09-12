@@ -98,6 +98,7 @@ public sealed class BuildTools
             var combined = probe.CombinedOutput;
             var processExitCode = probe.ExitCode;
             var runMetadata = probe.RunMetadata;
+            var projectName = TempReportWriter.GetProjectName(workspacePath);
             if (probe.TimedOut || probe.BudgetExhausted)
             {
                 var hang = new StringBuilder();
@@ -106,8 +107,7 @@ public sealed class BuildTools
                 AppendRunMetadata(hang, runMetadata, probe.StepsExecuted, effectiveConfiguration, effectivePlatform, probe.NoIncremental);
                 hang.AppendLine();
                 hang.AppendLine(DotNetCliRunner.FormatHangHints(timedOut: probe.TimedOut, cancelled: false));
-                hang.AppendLine();
-                TruncatedProcessLog.AppendLastCharacters(hang, "Console output:", combined);
+                TempReportWriter.AppendPointer(hang, combined, projectName, "console-output.md", "Console output");
                 return ToolTelemetry.TraceAndReturn(nameof(RunDotNetBuild), hang.ToString().TrimEnd());
             }
 
@@ -149,7 +149,8 @@ public sealed class BuildTools
                         combined,
                         effectiveConfiguration,
                         effectivePlatform,
-                        probe.NoIncremental));
+                        probe.NoIncremental,
+                        projectName));
             }
 
             var errSb = new StringBuilder();
@@ -170,10 +171,7 @@ public sealed class BuildTools
 
             if (totalMatched < CountLikelyIssueLines(combined))
             {
-                TruncatedProcessLog.AppendLastCharacters(
-                    errSb,
-                    "Additional console output (truncated):",
-                    combined);
+                TempReportWriter.AppendPointer(errSb, combined, projectName, "console-output.md", "Console output");
             }
 
             MsBuildLogHighlighter.AppendKeyLinesSection(errSb, combined);
@@ -230,7 +228,8 @@ public sealed class BuildTools
         string combined,
         string? configuration,
         string? platform,
-        bool noIncremental)
+        bool noIncremental,
+        string projectName)
     {
         var sb = new StringBuilder();
         sb.AppendLine("## Build failed");
@@ -244,10 +243,7 @@ public sealed class BuildTools
         sb.AppendLine(
             "Steps: minimal build → restore (minimal, then detailed if empty) → build normal → build detailed (within overall probe budget). See sectioned console output below.");
         MsBuildLogHighlighter.AppendKeyLinesSection(sb, combined);
-        TruncatedProcessLog.AppendLastCharacters(
-            sb,
-            TruncatedProcessLog.BuildPreambleBuildConsoleTail(processExitCode),
-            combined);
+        TempReportWriter.AppendPointer(sb, combined, projectName, "console-output.md", "Console output");
         AppendNuGetAuditHintIfNeeded(sb, combined);
         return sb.ToString().TrimEnd();
     }

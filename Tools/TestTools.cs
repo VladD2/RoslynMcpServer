@@ -284,6 +284,7 @@ public sealed class TestTools
 
             TimeSpan? timeout = timeoutSeconds > 0 ? TimeSpan.FromSeconds(timeoutSeconds) : null;
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            var projectName = TempReportWriter.GetProjectName(fullPath);
 
             if (plan.PreTestBuildArguments is not null)
             {
@@ -304,9 +305,7 @@ public sealed class TestTools
                     timedOut.AppendLine(extraMeta);
                     timedOut.AppendLine();
                     timedOut.AppendLine(DotNetCliRunner.FormatHangHints(timedOut: true, cancelled: false));
-                    timedOut.AppendLine();
-                    TruncatedProcessLog.AppendLastCharacters(
-                        timedOut, "Console output before kill:", buildRun.CombinedOutput);
+                    TempReportWriter.AppendPointer(timedOut, buildRun.CombinedOutput, projectName, "console-output.md", "Console output");
                     return ToolTelemetry.TraceAndReturn(toolName, timedOut.ToString().TrimEnd());
                 }
 
@@ -319,10 +318,7 @@ public sealed class TestTools
                     failed.AppendLine();
                     failed.AppendLine(buildRun.RunMetadata);
                     failed.AppendLine(extraMeta);
-                    TruncatedProcessLog.AppendLastCharacters(
-                        failed,
-                        TruncatedProcessLog.BuildPreambleBuildConsoleTail(buildRun.ExitCode),
-                        buildRun.CombinedOutput);
+                    TempReportWriter.AppendPointer(failed, buildRun.CombinedOutput, projectName, "console-output.md", "Console output");
                     return ToolTelemetry.TraceAndReturn(toolName, failed.ToString().TrimEnd());
                 }
 
@@ -360,8 +356,7 @@ public sealed class TestTools
                 sb.AppendLine(extraMeta);
                 sb.AppendLine();
                 sb.AppendLine(DotNetCliRunner.FormatHangHints(timedOut: true, cancelled: false));
-                sb.AppendLine();
-                TruncatedProcessLog.AppendLastCharacters(sb, "Console output before kill:", run.CombinedOutput);
+                TempReportWriter.AppendPointer(sb, run.CombinedOutput, projectName, "console-output.md", "Console output");
                 return ToolTelemetry.TraceAndReturn(toolName, sb.ToString().TrimEnd());
             }
 
@@ -372,7 +367,8 @@ public sealed class TestTools
                 run.CombinedOutput,
                 filter,
                 filterDescription,
-                requireFilterMatch);
+                requireFilterMatch,
+                projectName);
 
             if (requireFilterMatch
                 && markdown.Contains("## Filtered test run — no matching tests", StringComparison.Ordinal))

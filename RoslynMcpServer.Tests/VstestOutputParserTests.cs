@@ -56,7 +56,8 @@ public sealed class VstestOutputParserTests
             output,
             "FullyQualifiedName~NexwayOrderCompletedNotificationContext_ReceivedNotification_ExternalEventsPublished",
             "Name suffix",
-            requireFilterMatch: true);
+            requireFilterMatch: true,
+            projectName: "Test");
         Assert.Contains("Filtered tests passed", md, StringComparison.Ordinal);
         Assert.DoesNotContain("no matching tests", md, StringComparison.Ordinal);
     }
@@ -155,7 +156,7 @@ public sealed class VstestOutputParserTests
         Assert.Equal(0, result.Summary?.Passed);
         Assert.Equal(1, result.Summary?.Failed);
 
-        var md = VstestOutputParser.BuildMarkdownReport(result, 1, output, null, null, false);
+        var md = VstestOutputParser.BuildMarkdownReport(result, 1, output, null, null, false, "Test");
         Assert.Contains("1 Tests Failed", md, StringComparison.Ordinal);
         Assert.DoesNotContain("**Status:** partial", md, StringComparison.Ordinal);
     }
@@ -349,7 +350,7 @@ public sealed class VstestOutputParserTests
     public void BuildMarkdownReport_includes_partial_status()
     {
         var parse = VstestOutputParser.Parse("noise only", 0);
-        var md = VstestOutputParser.BuildMarkdownReport(parse, 0, "noise only", null, null, false);
+        var md = VstestOutputParser.BuildMarkdownReport(parse, 0, "noise only", null, null, false, "Test");
         Assert.Contains("**Status:** partial", md, StringComparison.Ordinal);
         Assert.Contains("Tests completed (exit 0)", md, StringComparison.Ordinal);
     }
@@ -358,8 +359,8 @@ public sealed class VstestOutputParserTests
     public void BuildMarkdownReport_no_matching_filter_emits_agent_signal()
     {
         const string output = """
-            Passed!  - Failed: 0, Passed: 1, Skipped: 0, Total: 1
-              Passed Other.Namespace.OtherTests.Other [1 ms]
+            No test matches the given testcase filter `FullyQualifiedName~.MissingTests.MissingMethod` in C:\w\A.dll
+            No test matches the given testcase filter `FullyQualifiedName~.MissingTests.MissingMethod` in C:\w\B.dll
             """;
         var parse = VstestOutputParser.Parse(output, 0);
         var md = VstestOutputParser.BuildMarkdownReport(
@@ -368,10 +369,116 @@ public sealed class VstestOutputParserTests
             output,
             "FullyQualifiedName~.MissingTests.MissingMethod",
             "Name suffix `.MissingTests.MissingMethod`",
-            requireFilterMatch: true);
+            requireFilterMatch: true,
+            projectName: "Test");
 
         Assert.Contains("## Filtered test run — no matching tests", md, StringComparison.Ordinal);
         Assert.Contains("**Agent signal:**", md, StringComparison.Ordinal);
         Assert.Contains("**Match mode:** Name suffix", md, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildMarkdownReport_mstest_multi_project_matching_test_not_flagged_no_match()
+    {
+        // Real MSTest (CsNitra) solution run: two sibling assemblies emit "No test matches" noise,
+        // but ParserTests.dll executed the filtered test (method-name-only display, no dots).
+        // The aggregate "Total tests: 1" must win over the noise — no false "no matching tests".
+        const string output = """
+            No test matches the given testcase filter `FullyQualifiedName~Recovery.FinalStateTests.Test_PartialAtEof_RecoveredWithHoles` in C:\RSDN\CsNitra\bin\Debug\net8.0\WiWorkflowTests.dll
+            No test matches the given testcase filter `FullyQualifiedName~Recovery.FinalStateTests.Test_PartialAtEof_RecoveredWithHoles` in C:\RSDN\CsNitra\bin\Debug\net8.0\RegexTests.dll
+
+              Passed Test_PartialAtEof_RecoveredWithHoles [28 ms]
+
+            Test Run Successful.
+            Total tests: 1
+                 Passed: 1
+             Total time: 0,3378 Seconds
+            """;
+        var parse = VstestOutputParser.Parse(output, exitCode: 0);
+        Assert.Equal(1, parse.Summary?.Total);
+        Assert.Equal(1, parse.Summary?.Passed);
+        var md = VstestOutputParser.BuildMarkdownReport(
+            parse, 0, output,
+            "FullyQualifiedName~Recovery.FinalStateTests.Test_PartialAtEof_RecoveredWithHoles",
+            "Name suffix",
+            requireFilterMatch: true,
+            projectName: "Nitra");
+
+        Assert.Contains("Filtered tests passed", md, StringComparison.Ordinal);
+        Assert.DoesNotContain("no matching tests", md, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildMarkdownReport_mstest_multi_project_zero_match_reports_no_match()
+    {
+        // Real MSTest (CsNitra) solution run where the filter matches nothing in any assembly:
+        // three "No test matches" lines, no summary. Must report the agent signal.
+        const string output = """
+            No test matches the given testcase filter `FullyQualifiedName~ZZZ_NO_SUCH_TEST_ZZZ` in C:\RSDN\CsNitra\bin\Debug\net8.0\WiWorkflowTests.dll
+
+            No test matches the given testcase filter `FullyQualifiedName~ZZZ_NO_SUCH_TEST_ZZZ` in C:\RSDN\CsNitra\bin\Debug\net8.0\RegexTests.dll
+
+            No test matches the given testcase filter `FullyQualifiedName~ZZZ_NO_SUCH_TEST_ZZZ` in C:\RSDN\CsNitra\bin\Debug\net8.0\ParserTests.dll
+            """;
+        var parse = VstestOutputParser.Parse(output, exitCode: 0);
+        var md = VstestOutputParser.BuildMarkdownReport(
+            parse, 0, output,
+            "FullyQualifiedName~ZZZ_NO_SUCH_TEST_ZZZ",
+            "Name suffix",
+            requireFilterMatch: true,
+            projectName: "Nitra");
+
+        Assert.Contains("## Filtered test run — no matching tests", md, StringComparison.Ordinal);
+        Assert.Contains("**Agent signal:**", md, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildMarkdownReport_xunit_multi_project_matching_test_with_nonzero_exit_passes()
+    {
+        // Real xUnit v3 solution run: B.dll emits "No test matches" (forcing exit code 1),
+        // but A.dll executed the filtered test. failed == 0 must be reported as passed.
+        const string output = """
+            No test matches the given testcase filter `FullyQualifiedName~MyNamespace.MyClass.MyTest` in C:\x\B\bin\Debug\net10.0\B.dll
+
+              Passed MyNamespace.MyClass.MyTest [15 ms]
+
+            Test Run Successful.
+            Total tests: 1
+                 Passed: 1
+             Total time: 1,0813 Seconds
+            """;
+        var parse = VstestOutputParser.Parse(output, exitCode: 1);
+        var md = VstestOutputParser.BuildMarkdownReport(
+            parse, 1, output,
+            "FullyQualifiedName~MyNamespace.MyClass.MyTest",
+            "Name suffix",
+            requireFilterMatch: true,
+            projectName: "XUnitRepro");
+
+        Assert.Contains("Filtered tests passed", md, StringComparison.Ordinal);
+        Assert.DoesNotContain("no matching tests", md, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tests Failed", md, StringComparison.Ordinal);
+        Assert.Contains("non-zero", md, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildMarkdownReport_xunit_multi_project_zero_match_reports_no_match()
+    {
+        // Real xUnit v3 solution run where the filter matches nothing: two "No test matches"
+        // lines, no summary. Must report the agent signal.
+        const string output = """
+            No test matches the given testcase filter `FullyQualifiedName~ZZZ_NO_SUCH_ZZZ` in C:\x\A\bin\Debug\net10.0\A.dll
+            No test matches the given testcase filter `FullyQualifiedName~ZZZ_NO_SUCH_ZZZ` in C:\x\B\bin\Debug\net10.0\B.dll
+            """;
+        var parse = VstestOutputParser.Parse(output, exitCode: 0);
+        var md = VstestOutputParser.BuildMarkdownReport(
+            parse, 0, output,
+            "FullyQualifiedName~ZZZ_NO_SUCH_ZZZ",
+            "Name suffix",
+            requireFilterMatch: true,
+            projectName: "XUnitRepro");
+
+        Assert.Contains("## Filtered test run — no matching tests", md, StringComparison.Ordinal);
+        Assert.Contains("**Agent signal:**", md, StringComparison.Ordinal);
     }
 }

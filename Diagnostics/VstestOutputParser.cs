@@ -9,7 +9,6 @@ public static partial class VstestOutputParser
 {
     private const int MaxFailedTestDetails = 5;
     private const int MaxStackTraceLinesPerFailure = 15;
-    private const int PartialSuccessTailChars = 2048;
 
     /// <summary>VSTest console duration: <c>[12 ms]</c>, <c>[1 s]</c>, <c>[1 m 28 s]</c>, <c>[1 h 2 m]</c>.</summary>
     private const string VstestDurationBracket =
@@ -51,6 +50,10 @@ public static partial class VstestOutputParser
     /// <summary>VSTest console block: Total tests + Passed (Failed/Skipped optional). Fail-only .slnx blocks are parsed line-wise.</summary>
     [GeneratedRegex(@"Total tests:\s*(?<total>\d+)(?:[\s\S]{0,2000}?)\s+Passed:\s*(?<passed>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex RxVstestTotalsBlock();
+
+    /// <summary>VSTest per-assembly discovery noise: emitted when the filter matches no test in that assembly.</summary>
+    [GeneratedRegex(@"No test matches the given testcase filter", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex RxNoTestMatchesLine();
 
     public sealed record TestSummary(int Total, int Passed, int Failed, int Skipped);
 
@@ -144,7 +147,8 @@ public static partial class VstestOutputParser
         string combinedOutput,
         string? filter,
         string? filterDescription,
-        bool requireFilterMatch)
+        bool requireFilterMatch,
+        string projectName)
     {
         var sb = new StringBuilder();
 
@@ -161,13 +165,35 @@ public static partial class VstestOutputParser
             sb.AppendLine();
         }
 
+        // A filter that actually executed tests (aggregate Total tests > 0) has matched by definition.
+        // In a multi-project run, sibling assemblies that contain no matching test emit
+        // "No test matches the given testcase filter ..." noise lines; those must NOT short-circuit
+        // the whole run into a false "zero tests matched" discovery failure when another assembly
+        // did execute the filtered test. Only report "no matching tests" when VSTest explicitly said
+        // so AND no test actually ran.
+        var anyTestExecuted = parse.Summary is { Total: > 0 };
+        if (requireFilterMatch && !anyTestExecuted && RxNoTestMatchesLine().IsMatch(combinedOutput))
+        {
+            sb.AppendLine("## Filtered test run — no matching tests");
+            sb.AppendLine();
+            sb.AppendLine(
+                "**Agent signal:** zero tests matched the filter (build may still show `0 Error(s)`). "
+                + "Verify Roslyn workspace scope with `get_test_list` after loading the test `.sln`/`.slnx`.");
+            if (!string.IsNullOrWhiteSpace(filterDescription))
+            {
+                sb.AppendLine($"**Match mode:** {filterDescription}");
+            }
+
+            TempReportWriter.AppendPointer(sb, combinedOutput, projectName, "raw-output.md", "Raw output");
+            return sb.ToString().TrimEnd();
+        }
+
         if (parse.IsPartialSuccess)
         {
             sb.AppendLine("**Status:** partial");
             sb.AppendLine();
             sb.AppendLine("Tests completed (exit 0); no VSTest/xUnit summary line was detected.");
-            sb.AppendLine();
-            AppendRawTail(sb, combinedOutput);
+            TempReportWriter.AppendPointer(sb, combinedOutput, projectName, "raw-output.md", "Raw output");
             return sb.ToString().TrimEnd();
         }
 
@@ -176,20 +202,7 @@ public static partial class VstestOutputParser
             sb.AppendLine(string.IsNullOrWhiteSpace(filter) ? "## Test run" : "## Filtered test run");
             sb.AppendLine();
             sb.AppendLine($"No standard VSTest/xUnit summary line was detected (exit code `{exitCode}`).");
-            if (parse.Failures.Count > 0)
-            {
-                sb.AppendLine();
-                AppendFailureDetails(sb, parse.Failures, CountFailureAnchors(combinedOutput) > MaxFailedTestDetails);
-            }
-
-            if (exitCode != 0)
-            {
-                TruncatedProcessLog.AppendLastCharacters(
-                    sb,
-                    TruncatedProcessLog.BuildPreambleTestFailed(exitCode),
-                    combinedOutput);
-            }
-
+            TempReportWriter.AppendPointer(sb, combinedOutput, projectName, "console-output.md", "Console output");
             return sb.ToString().TrimEnd();
         }
 
@@ -199,87 +212,74 @@ public static partial class VstestOutputParser
             sb.AppendLine("**Status:** partial");
             sb.AppendLine();
             sb.AppendLine("Tests completed; summary counts could not be parsed.");
-            AppendRawTail(sb, combinedOutput);
-            return sb.ToString().TrimEnd();
-        }
-
-        if (requireFilterMatch && !FilterMatchedAnyTest(filter, combinedOutput, parse.PassedTestNames))
-        {
-            sb.AppendLine("## Filtered test run — no matching tests");
-            sb.AppendLine();
-            sb.AppendLine(
-                $"No passed/failed test line matched the filter needle `{EscapeMdBackticks(ExtractFilterNeedle(filter) ?? filter!)}`.");
-            sb.AppendLine();
-            sb.AppendLine(
-                "**Agent signal:** zero tests matched the filter (build may still show `0 Error(s)`). "
-                + "Do not assume the test is missing from the repo — verify Roslyn workspace scope with `get_test_list` after loading the test `.sln`/`.slnx` "
-                + "(`workspace-path` in `RoslynMcp.jsonc`, or `reload`/`load_workspace`).");
-            if (!string.IsNullOrWhiteSpace(filterDescription))
-            {
-                sb.AppendLine($"**Match mode:** {filterDescription}");
-            }
-
-            sb.AppendLine();
-            AppendRawTail(sb, combinedOutput);
+            TempReportWriter.AppendPointer(sb, combinedOutput, projectName, "raw-output.md", "Raw output");
             return sb.ToString().TrimEnd();
         }
 
         var (total, passed, failed, skipped) = summary;
 
-        if (failed == 0 && exitCode == 0)
+        if (failed == 0)
         {
             sb.AppendLine(string.IsNullOrWhiteSpace(filter) ? "## All tests passed successfully!" : "## Filtered tests passed");
             sb.AppendLine();
             sb.AppendLine(
                 $"Total: **{total}** · Passed: **{passed}** · Failed: **{failed}**" +
                 (skipped > 0 ? $" · Skipped: **{skipped}**" : string.Empty));
-            if (parse.PassedTestNames.Count > 0 && !string.IsNullOrWhiteSpace(filter))
+            if (exitCode != 0)
             {
                 sb.AppendLine();
-                sb.AppendLine($"Matched tests: `{EscapeMdBackticks(string.Join("`, `", parse.PassedTestNames.Take(5)))}`");
+                sb.AppendLine(
+                    "_Exit code is non-zero but no test failed — sibling test projects reported "
+                    + "`No test matches the given testcase filter` and are ignored. All executed tests passed._");
             }
 
             return sb.ToString().TrimEnd();
         }
 
+        // Fail case: concise summary + first failure one-liner inline; full details offloaded to a temp file.
         sb.AppendLine($"❌ {failed} Tests Failed.");
         sb.AppendLine();
         sb.AppendLine(
             $"Total: **{total}** · Passed: **{passed}** · Failed: **{failed}**" +
             (skipped > 0 ? $" · Skipped: **{skipped}**" : string.Empty));
-        sb.AppendLine();
-        AppendFailureDetails(sb, parse.Failures, CountFailureAnchors(combinedOutput) > MaxFailedTestDetails);
-        if (parse.Failures.Count == 0)
+
+        var details = new StringBuilder();
+        if (parse.Failures.Count > 0)
         {
-            sb.AppendLine(
-                "_Failure details could not be parsed from the log (format may differ). Inspect raw output below._");
-            AppendRawTail(sb, combinedOutput);
+            var first = parse.Failures[0];
+            sb.AppendLine();
+            sb.AppendLine($"1. **{EscapeMdBackticks(first.Name)}** — {OneLineError(first.Error)}");
+            AppendFailureDetails(details, parse.Failures, CountFailureAnchors(combinedOutput) > MaxFailedTestDetails);
         }
+        else
+        {
+            sb.AppendLine();
+            sb.AppendLine("_Failure details could not be parsed from the log (format may differ)._");
+        }
+
+        details.AppendLine();
+        details.AppendLine("## Raw output");
+        details.AppendLine();
+        details.AppendLine("```text");
+        details.AppendLine((combinedOutput ?? string.Empty).TrimEnd());
+        details.AppendLine("```");
+
+        TempReportWriter.AppendPointer(sb, details.ToString(), projectName, "test-failures.md", "Full failure details");
 
         return sb.ToString().TrimEnd();
     }
 
-    private static void AppendRawTail(StringBuilder sb, string combinedOutput)
+    private static string OneLineError(string error)
     {
-        sb.AppendLine();
-        sb.AppendLine($"Raw output (last {PartialSuccessTailChars} chars):");
-        sb.AppendLine();
-        sb.AppendLine("```text");
-        if (string.IsNullOrEmpty(combinedOutput))
+        if (string.IsNullOrWhiteSpace(error))
         {
-            sb.AppendLine("(empty)");
-        }
-        else if (combinedOutput.Length <= PartialSuccessTailChars)
-        {
-            sb.AppendLine(combinedOutput.TrimEnd());
-        }
-        else
-        {
-            sb.AppendLine(combinedOutput[^PartialSuccessTailChars..].TrimEnd());
+            return "(no error message captured)";
         }
 
-        sb.AppendLine("```");
+        var oneLine = error.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return oneLine.Length > 200 ? oneLine[..197] + "..." : oneLine;
     }
+
 
     private static bool HasSummaryMarkers(string text) =>
         RxEndSummaryLine().IsMatch(text)
