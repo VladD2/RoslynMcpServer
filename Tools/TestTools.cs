@@ -42,7 +42,9 @@ public sealed class TestTools
             + "Omit to inherit the config `configuration` (`RoslynMcp.jsonc`), else the SDK/solution default (often wrong on multi-config `.slnx`).")]
         string? configuration = null,
         [Description(
-            "Optional MSBuild Platform (`dotnet test -p:Platform=`). Examples: `AnyCPU`, `x64`. Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
+            "Optional MSBuild Platform (`dotnet test -p:Platform=`). For a `.sln` the value must match the solution "
+            + "configuration name exactly (e.g. `Any CPU` with the space, `x64`); for a `.csproj` any platform name works. "
+            + "Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
         string? platform = null,
         CancellationToken cancellationToken = default)
     {
@@ -91,7 +93,9 @@ public sealed class TestTools
             + "Omit to inherit the config `configuration` (`RoslynMcp.jsonc`), else the SDK/solution default (often wrong on multi-config `.slnx`).")]
         string? configuration = null,
         [Description(
-            "Optional MSBuild Platform (`dotnet test -p:Platform=`). Examples: `AnyCPU`, `x64`. Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
+            "Optional MSBuild Platform (`dotnet test -p:Platform=`). For a `.sln` the value must match the solution "
+            + "configuration name exactly (e.g. `Any CPU` with the space, `x64`); for a `.csproj` any platform name works. "
+            + "Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
         string? platform = null,
         CancellationToken cancellationToken = default)
     {
@@ -262,7 +266,7 @@ public sealed class TestTools
                 effectiveConfiguration = DotNetConfigurationArguments.Coalesce(
                     configuration, _solutionManager.LoadedConfiguration, nameof(configuration));
                 effectivePlatform = DotNetConfigurationArguments.CoalescePlatform(
-                    platform, _solutionManager.LoadedPlatform);
+                    platform, _solutionManager.LoadedPlatformRaw);
                 plan = DotNetTestArguments.BuildPlan(
                     targetPath, filter, noBuild, noRestore, effectiveConfiguration, effectivePlatform);
             }
@@ -344,6 +348,8 @@ public sealed class TestTools
                 workDir,
                 cancellationToken,
                 timeout).ConfigureAwait(false);
+
+            DotNetCliRunner.DumpLastOutput("test", run.CombinedOutput);
 
             if (run.TimedOut)
             {

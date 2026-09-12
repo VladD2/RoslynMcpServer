@@ -189,6 +189,154 @@ public sealed class VstestOutputParserTests
     }
 
     [Fact]
+    public void Parse_aggregates_per_assembly_summary_lines_for_solution_run()
+    {
+        // A .sln run emits one end-summary line per test assembly — the report must sum them,
+        // not pick a single line (which under-reported 252 tests as 1).
+        const string output = """
+            Test run for C:\w\bin\Debug\net8.0\WiWorkflowTests.dll (.NETCoreApp,Version=v8.0)
+            VSTest version 17.11.1 (x64)
+
+            Test run for C:\w\bin\Debug\net8.0\ParserTests.dll (.NETCoreApp,Version=v8.0)
+            VSTest version 17.11.1 (x64)
+
+            Test run for C:\w\bin\Debug\net8.0\RegexTests.dll (.NETCoreApp,Version=v8.0)
+            VSTest version 17.11.1 (x64)
+
+            Passed!  - Failed:     0, Passed:     1, Skipped:     0, Total:     1, Duration: 12 ms - WiWorkflowTests.dll (net8.0)
+              Skipped RequiredSubruleNamesAreNotSpecified
+              Skipped ShouldReportErrorForUndefinedRuleReference
+
+            Passed!  - Failed:     0, Passed:   242, Skipped:     2, Total:   244, Duration: 112 ms - ParserTests.dll (net8.0)
+
+            Passed!  - Failed:     0, Passed:     9, Skipped:     0, Total:     9, Duration: 512 ms - RegexTests.dll (net8.0)
+            """;
+        var result = VstestOutputParser.Parse(output, exitCode: 0);
+        Assert.NotNull(result.Summary);
+        Assert.Equal(254, result.Summary!.Total);
+        Assert.Equal(252, result.Summary.Passed);
+        Assert.Equal(0, result.Summary.Failed);
+        Assert.Equal(2, result.Summary.Skipped);
+    }
+
+    [Fact]
+    public void Parse_aggregates_failed_assembly_into_solution_totals()
+    {
+        const string output = """
+            Passed!  - Failed:     0, Passed:     1, Skipped:     0, Total:     1, Duration: 12 ms - A.dll (net8.0)
+            Failed!  - Failed:     2, Passed:     3, Skipped:     1, Total:     6, Duration: 40 ms - B.dll (net8.0)
+            """;
+        var result = VstestOutputParser.Parse(output, exitCode: 1);
+        Assert.NotNull(result.Summary);
+        Assert.Equal(7, result.Summary!.Total);
+        Assert.Equal(4, result.Summary.Passed);
+        Assert.Equal(2, result.Summary.Failed);
+        Assert.Equal(1, result.Summary.Skipped);
+    }
+
+    [Fact]
+    public void Parse_aggregates_total_tests_blocks_for_solution_run()
+    {
+        // With --logger console;verbosity=normal each assembly emits a "Total tests: N" block
+        // (not a "Passed! - ..." line). The first block's totals must not be mixed with a
+        // different block's Skipped/Failed count lines (reported 254 tests as "Total: 1, Skipped: 2").
+        const string output = """
+            Test run for C:\w\bin\Debug\net8.0\WiWorkflowTests.dll (.NETCoreApp,Version=v8.0)
+            VSTest version 17.11.1 (x64)
+
+            Test run for C:\w\bin\Debug\net8.0\ParserTests.dll (.NETCoreApp,Version=v8.0)
+            VSTest version 17.11.1 (x64)
+
+            Test run for C:\w\bin\Debug\net8.0\RegexTests.dll (.NETCoreApp,Version=v8.0)
+            VSTest version 17.11.1 (x64)
+
+            Starting test execution, please wait...
+            A total of 1 test files matched the specified pattern.
+
+            Test Run Successful.
+            Total tests: 1
+                 Passed: 1
+              Total time: 0,3037 Seconds
+                Passed Test_One [1 ms]
+
+            Test Run Successful.
+            Total tests: 244
+                 Passed: 242
+                Skipped: 2
+              Total time: 0,3706 Seconds
+                Passed Test_Two [3 ms]
+
+            Test Run Successful.
+            Total tests: 9
+                 Passed: 9
+              Total time: 0,7794 Seconds
+                Passed Test_Three [2 ms]
+            """;
+        var result = VstestOutputParser.Parse(output, exitCode: 0);
+        Assert.NotNull(result.Summary);
+        Assert.Equal(254, result.Summary!.Total);
+        Assert.Equal(252, result.Summary.Passed);
+        Assert.Equal(0, result.Summary.Failed);
+        Assert.Equal(2, result.Summary.Skipped);
+    }
+
+    [Fact]
+    public void Parse_total_tests_block_counts_do_not_leak_between_blocks()
+    {
+        // A small assembly followed by a large one: the next block's "Passed:" line must not be
+        // counted into the previous block (window bleed).
+        const string output = """
+            Test Run Successful.
+            Total tests: 1
+                 Passed: 1
+              Total time: 0,1000 Seconds
+            Test run for C:\w\bin\Debug\net8.0\Big.dll (.NETCoreApp,Version=v8.0)
+            Test Run Successful.
+            Total tests: 100
+                 Passed: 100
+              Total time: 0,5000 Seconds
+            """;
+        var result = VstestOutputParser.Parse(output, exitCode: 0);
+        Assert.NotNull(result.Summary);
+        Assert.Equal(101, result.Summary!.Total);
+        Assert.Equal(101, result.Summary.Passed);
+        Assert.Equal(0, result.Summary.Failed);
+        Assert.Equal(0, result.Summary.Skipped);
+    }
+
+    [Fact]
+    public void Parse_single_total_tests_block_still_parsed()
+    {
+        const string output = """
+            Test Run Successful.
+            Total tests: 5
+                 Passed: 4
+                Failed: 1
+              Total time: 0,2000 Seconds
+            """;
+        var result = VstestOutputParser.Parse(output, exitCode: 1);
+        Assert.NotNull(result.Summary);
+        Assert.Equal(5, result.Summary!.Total);
+        Assert.Equal(4, result.Summary.Passed);
+        Assert.Equal(1, result.Summary.Failed);
+        Assert.Equal(0, result.Summary.Skipped);
+    }
+
+    [Fact]
+    public void Parse_single_assembly_summary_still_parsed()
+    {
+        const string output = """
+            Passed!  - Failed:     0, Passed:     3, Skipped:     1, Total:     4, Duration: 120 ms - A.dll (net8.0)
+            """;
+        var result = VstestOutputParser.Parse(output, exitCode: 0);
+        Assert.NotNull(result.Summary);
+        Assert.Equal(4, result.Summary!.Total);
+        Assert.Equal(3, result.Summary.Passed);
+        Assert.Equal(0, result.Summary.Failed);
+        Assert.Equal(1, result.Summary.Skipped);
+    }
+
+    [Fact]
     public void DeduplicateNuGetAuditLines_removes_repeated_warning()
     {
         const string line = "warning NU1904: Package 'X' has a known vulnerability";

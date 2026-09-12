@@ -43,7 +43,8 @@ public sealed class BuildTools
             + "Set false only for large monorepos where you explicitly accept MSBuild incremental caching.")]
         bool noIncremental = true,
         [Description(
-            "Optional MSBuild Platform (`dotnet build -p:Platform=`). Examples: `AnyCPU`, `x64`. `Any CPU` is normalized to `AnyCPU`. "
+            "Optional MSBuild Platform (`dotnet build -p:Platform=`). For a `.sln` the value must match the solution "
+            + "configuration name exactly (e.g. `Any CPU` with the space, `x64`); for a `.csproj` any platform name works. "
             + "Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
         string? platform = null,
         CancellationToken cancellationToken = default)
@@ -79,7 +80,7 @@ public sealed class BuildTools
                 effectiveConfiguration = DotNetConfigurationArguments.Coalesce(
                     configuration, _solutionManager.LoadedConfiguration, nameof(configuration));
                 effectivePlatform = DotNetConfigurationArguments.CoalescePlatform(
-                    platform, _solutionManager.LoadedPlatform);
+                    platform, _solutionManager.LoadedPlatformRaw);
             }
             catch (ArgumentException ex)
             {

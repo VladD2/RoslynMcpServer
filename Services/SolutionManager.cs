@@ -66,6 +66,7 @@ public sealed class SolutionManager
     private string? _loadedPath;
     private string? _loadedConfiguration;
     private string? _loadedPlatform;
+    private string? _loadedPlatformRaw;
     private string? _loadedTargetFramework;
     private IReadOnlyList<WorkspaceDiagnostic> _lastDiagnostics = Array.Empty<WorkspaceDiagnostic>();
 
@@ -90,6 +91,13 @@ public sealed class SolutionManager
 
     /// <summary>MSBuild <c>Platform</c> used for the last successful <see cref="LoadAsync"/>, or <see langword="null"/>.</summary>
     public string? LoadedPlatform => _loadedPlatform;
+
+    /// <summary>
+    /// The <c>Platform</c> as provided for the last successful <see cref="LoadAsync"/> (trimmed, not
+    /// alias-normalized), or <see langword="null"/>. Inherited by <c>dotnet build|test</c> CLI arguments,
+    /// where a <c>.sln</c> needs the exact solution configuration name (e.g. <c>Any CPU</c>).
+    /// </summary>
+    public string? LoadedPlatformRaw => _loadedPlatformRaw;
 
     /// <summary>MSBuild <c>TargetFramework</c> used for the last successful <see cref="LoadAsync"/>, or <see langword="null"/>.</summary>
     public string? LoadedTargetFramework => _loadedTargetFramework;
@@ -133,6 +141,7 @@ public sealed class SolutionManager
         }
 
         var normalizedConfiguration = DotNetConfigurationArguments.Normalize(configuration, nameof(configuration));
+        var platformRaw = DotNetConfigurationArguments.Normalize(platform, nameof(platform));
         var normalizedPlatform = DotNetConfigurationArguments.NormalizePlatform(platform);
         var normalizedTargetFramework = DotNetConfigurationArguments.Normalize(targetFramework, nameof(targetFramework));
 
@@ -143,6 +152,7 @@ public sealed class SolutionManager
                 fullPath,
                 normalizedConfiguration,
                 normalizedPlatform,
+                platformRaw,
                 normalizedTargetFramework,
                 cancellationToken);
         }
@@ -584,6 +594,11 @@ public sealed class SolutionManager
         try
         {
             StopDiskWatcherUnderLock();
+            if (!string.IsNullOrEmpty(_loadedPath))
+            {
+                AnalyzerShadowLoader.Cleanup(Path.GetDirectoryName(_loadedPath));
+            }
+
             _watchRoots = Array.Empty<string>();
             _dirtySourcePaths.Clear();
             _selfWriteUntilTicks.Clear();
@@ -597,6 +612,7 @@ public sealed class SolutionManager
             _loadedPath = null;
             _loadedConfiguration = null;
             _loadedPlatform = null;
+            _loadedPlatformRaw = null;
             _loadedTargetFramework = null;
             _lastDiagnostics = Array.Empty<WorkspaceDiagnostic>();
             _logger.LogInformation("Roslyn workspace cleared (MSBuildWorkspace disposed).");
@@ -640,11 +656,12 @@ public sealed class SolutionManager
         }
 
         // Walk-up load passes the config MSBuild properties (all null when the config omits them).
-        var (configuration, platform, targetFramework) = GetConfiguredLoadProperties();
+        var (configuration, platform, platformRaw, targetFramework) = GetConfiguredLoadProperties();
         _ = await LoadCoreAsync(
             candidateFull,
             configuration,
             platform,
+            platformRaw,
             targetFramework,
             cancellationToken);
     }
@@ -677,19 +694,20 @@ public sealed class SolutionManager
                 return false;
             }
 
-            var (configuration, platform, targetFramework) = GetConfiguredLoadProperties();
-            _ = await LoadCoreAsync(fullPath, configuration, platform, targetFramework, cancellationToken).ConfigureAwait(false);
+            var (configuration, platform, platformRaw, targetFramework) = GetConfiguredLoadProperties();
+            _ = await LoadCoreAsync(fullPath, configuration, platform, platformRaw, targetFramework, cancellationToken).ConfigureAwait(false);
         }
 
         return true;
     }
 
     /// <summary>Normalizes the config MSBuild properties for <see cref="LoadCoreAsync"/>.</summary>
-    private (string? Configuration, string? Platform, string? TargetFramework) GetConfiguredLoadProperties()
+    private (string? Configuration, string? Platform, string? PlatformRaw, string? TargetFramework) GetConfiguredLoadProperties()
     {
         return (
             DotNetConfigurationArguments.Normalize(_workspaceConfig.Configuration, nameof(_workspaceConfig.Configuration)),
             DotNetConfigurationArguments.NormalizePlatform(_workspaceConfig.Platform),
+            DotNetConfigurationArguments.Normalize(_workspaceConfig.Platform, "platform"),
             DotNetConfigurationArguments.Normalize(_workspaceConfig.TargetFramework, nameof(_workspaceConfig.TargetFramework)));
     }
 
@@ -700,6 +718,7 @@ public sealed class SolutionManager
         string fullPath,
         string? configuration,
         string? platform,
+        string? platformRaw,
         string? targetFramework,
         CancellationToken cancellationToken)
     {
@@ -780,8 +799,16 @@ public sealed class SolutionManager
             _loadedPath = fullPath;
             _loadedConfiguration = configuration;
             _loadedPlatform = platform;
+            _loadedPlatformRaw = platformRaw;
             _loadedTargetFramework = targetFramework;
             _lastDiagnostics = CollectDiagnostics(workspace, capturedDiagnostics);
+            // Keep workspace build-output analyzer / generator DLLs writable: pre-load shadow copies into the
+            // default ALC so the original bin/ files are never opened (and thus never locked) when the generators
+            // run. Must happen before any compilation is built (the generators run on the first compilation build).
+            AnalyzerShadowLoader.PreloadBuildOutputAnalyzers(
+                workspace.CurrentSolution,
+                Path.GetDirectoryName(fullPath),
+                _logger);
             // The project set only changes on a full load, so the watch-root cache is (re)computed here only.
             _watchRoots = ComputeWatchRoots(
                 fullPath,

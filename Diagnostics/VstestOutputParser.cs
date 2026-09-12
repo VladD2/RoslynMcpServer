@@ -290,12 +290,10 @@ public static partial class VstestOutputParser
 
     private static TestSummary? InferSummaryFromMarkers(string text)
     {
-        foreach (Match m in RxEndSummaryLine().Matches(text))
+        var endSummary = TryParseEndSummaryLines(text);
+        if (endSummary is not null)
         {
-            if (m.Success)
-            {
-                return SummaryFromEndMatch(m);
-            }
+            return endSummary;
         }
 
         var alt = RxEndSummaryLineAlt().Match(text);
@@ -322,15 +320,10 @@ public static partial class VstestOutputParser
             return null;
         }
 
-        Match? lastEnd = null;
-        foreach (Match m in RxEndSummaryLine().Matches(text))
+        var endSummary = TryParseEndSummaryLines(text);
+        if (endSummary is not null)
         {
-            lastEnd = m;
-        }
-
-        if (lastEnd is { Success: true })
-        {
-            return SummaryFromEndMatch(lastEnd);
+            return endSummary;
         }
 
         var alt = RxEndSummaryLineAlt().Match(text);
@@ -341,58 +334,53 @@ public static partial class VstestOutputParser
             return new TestSummary(passed + failed, passed, failed, 0);
         }
 
-        var vstestBlock = RxVstestTotalsBlock().Match(text);
-        if (vstestBlock.Success)
-        {
-            var total = int.Parse(vstestBlock.Groups["total"].Value, CultureInfo.InvariantCulture);
-            var passed = int.Parse(vstestBlock.Groups["passed"].Value, CultureInfo.InvariantCulture);
-            var failed = TryReadCountAfterTotalTests(text, RxFailedCountLine()) ?? 0;
-            var skipped = TryReadCountAfterTotalTests(text, RxSkippedCountLine()) ?? 0;
-            return new TestSummary(total, passed, failed, skipped);
-        }
-
-        if (RxTestRunSuccessful().IsMatch(text))
-        {
-            var fromLines = TryParseVstestCountsFromLines(text);
-            if (fromLines is not null)
-            {
-                return fromLines;
-            }
-        }
-
-        var lines = text.Split(['\r', '\n'], StringSplitOptions.None);
-        for (var i = lines.Length - 1; i >= 0; i--)
-        {
-            var tm = RxTotalTests().Match(lines[i].Trim());
-            if (!tm.Success)
-            {
-                continue;
-            }
-
-            var summary = TryParseCountsNearTotalTestsLine(lines, i);
-            if (summary is not null)
-            {
-                return summary;
-            }
-        }
-
-        return null;
+        // "Total tests: N" blocks (console;verbosity=normal): one block per test assembly — aggregate.
+        return TryParseTotalTestsBlocks(text);
     }
 
-    private static TestSummary? TryParseVstestCountsFromLines(string text)
+    /// <summary>
+    /// Parses the <c>Total tests: N</c> blocks (emitted per test assembly with
+    /// <c>--logger console;verbosity=normal</c>) and aggregates them. A single-block run behaves
+    /// exactly as before; a solution run sums every block instead of mixing the first block's totals
+    /// with count lines of a different block. Returns <see langword="null"/> when no block carries any
+    /// count lines (Total-only output, e.g. truncated) so the caller reports partial instead of inventing counts.
+    /// </summary>
+    private static TestSummary? TryParseTotalTestsBlocks(string text)
     {
         var lines = text.Split(['\r', '\n'], StringSplitOptions.None);
-        for (var i = lines.Length - 1; i >= 0; i--)
+        var total = 0;
+        var passed = 0;
+        var failed = 0;
+        var skipped = 0;
+        var found = false;
+        var hasCounts = false;
+
+        for (var i = 0; i < lines.Length; i++)
         {
             if (!RxTotalTests().IsMatch(lines[i].Trim()))
             {
                 continue;
             }
 
-            return TryParseCountsNearTotalTestsLine(lines, i);
+            found = true;
+            var block = TryParseCountsNearTotalTestsLine(lines, i);
+            if (block is null)
+            {
+                // Total-only block (no Passed/Failed/Skipped lines): count the total, keep counts as-is.
+                var tm = RxTotalTests().Match(lines[i].Trim());
+                total += int.Parse(tm.Groups["total"].Value, CultureInfo.InvariantCulture);
+                continue;
+            }
+
+            hasCounts = true;
+            total += block.Total;
+            passed += block.Passed;
+            failed += block.Failed;
+            skipped += block.Skipped;
         }
 
-        return null;
+        // Every block was Total-only (truncated output): do not invent counts — report partial instead.
+        return found && hasCounts ? new TestSummary(total, passed, failed, skipped) : null;
     }
 
     private static TestSummary? TryParseCountsNearTotalTestsLine(string[] lines, int totalTestsLineIndex)
@@ -410,6 +398,12 @@ public static partial class VstestOutputParser
 
         for (var j = totalTestsLineIndex; j < Math.Min(totalTestsLineIndex + 24, lines.Length); j++)
         {
+            if (j > totalTestsLineIndex && RxTotalTests().IsMatch(lines[j].Trim()))
+            {
+                // Next assembly's block starts — stop, otherwise its count lines leak into this block.
+                break;
+            }
+
             var line = lines[j].TrimEnd();
             var pm = RxPassedCountLine().Match(line);
             if (pm.Success)
@@ -447,20 +441,6 @@ public static partial class VstestOutputParser
         return new TestSummary(total, passed.Value, failed.Value, skipped.Value);
     }
 
-    private static int? TryReadCountAfterTotalTests(string text, Regex lineRegex)
-    {
-        foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-        {
-            var m = lineRegex.Match(line.TrimEnd());
-            if (m.Success)
-            {
-                return int.Parse(m.Groups["n"].Value, CultureInfo.InvariantCulture);
-            }
-        }
-
-        return null;
-    }
-
     private static TestSummary SummaryFromEndMatch(Match m)
     {
         var passed = int.Parse(m.Groups["passed"].Value, CultureInfo.InvariantCulture);
@@ -471,6 +451,47 @@ public static partial class VstestOutputParser
         var total = m.Groups["total"].Success
             ? int.Parse(m.Groups["total"].Value, CultureInfo.InvariantCulture)
             : passed + failed + skipped;
+        return new TestSummary(total, passed, failed, skipped);
+    }
+
+    /// <summary>
+    /// Parses the <c>Passed!/Failed! - Failed: N, Passed: N, ...</c> end-summary lines. A solution run
+    /// emits one line per test assembly — aggregate all of them (picking a single line under-reports
+    /// the total). Returns <see langword="null"/> when no such line is present.
+    /// </summary>
+    private static TestSummary? TryParseEndSummaryLines(string text)
+    {
+        var matches = RxEndSummaryLine().Matches(text);
+        if (matches.Count == 0)
+        {
+            return null;
+        }
+
+        if (matches.Count == 1)
+        {
+            return SummaryFromEndMatch(matches[0]);
+        }
+
+        var total = 0;
+        var passed = 0;
+        var failed = 0;
+        var skipped = 0;
+        foreach (Match m in matches)
+        {
+            var p = int.Parse(m.Groups["passed"].Value, CultureInfo.InvariantCulture);
+            var f = int.Parse(m.Groups["failed"].Value, CultureInfo.InvariantCulture);
+            var s = m.Groups["skipped"].Success
+                ? int.Parse(m.Groups["skipped"].Value, CultureInfo.InvariantCulture)
+                : 0;
+            var t = m.Groups["total"].Success
+                ? int.Parse(m.Groups["total"].Value, CultureInfo.InvariantCulture)
+                : p + f + s;
+            passed += p;
+            failed += f;
+            skipped += s;
+            total += t;
+        }
+
         return new TestSummary(total, passed, failed, skipped);
     }
 

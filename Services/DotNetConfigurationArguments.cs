@@ -39,6 +39,9 @@ public static class DotNetConfigurationArguments
 
     /// <summary>
     /// Same as <see cref="Normalize"/> plus the well-known sln alias <c>Any CPU</c> → <c>AnyCPU</c>.
+    /// Use for MSBuildWorkspace global properties, where <c>AnyCPU</c> is the canonical platform value.
+    /// Do NOT use for <c>dotnet build|test</c> arguments against a <c>.sln</c>: the CLI needs the exact
+    /// solution configuration name (e.g. <c>Any CPU</c> with the space) or MSBuild fails with MSB4126.
     /// </summary>
     public static string? NormalizePlatform(string? platform)
     {
@@ -54,8 +57,12 @@ public static class DotNetConfigurationArguments
     public static string? Coalesce(string? explicitValue, string? cached, string paramName) =>
         Normalize(explicitValue, paramName) ?? cached;
 
+    /// <summary>
+    /// CLI semantics: pass the platform through unchanged (no <c>Any CPU</c> → <c>AnyCPU</c> aliasing)
+    /// so a <c>.sln</c> build receives the exact solution configuration name.
+    /// </summary>
     public static string? CoalescePlatform(string? explicitValue, string? cached) =>
-        NormalizePlatform(explicitValue) ?? cached;
+        Normalize(explicitValue, "platform") ?? cached;
 
     /// <summary>
     /// Returns a leading-space fragment <c> -c "Name"</c>, or empty when <paramref name="configuration"/> is omitted.
@@ -68,10 +75,11 @@ public static class DotNetConfigurationArguments
 
     /// <summary>
     /// Returns a leading-space fragment <c> -p:Platform="Name"</c>, or empty when omitted.
+    /// The name is passed through unchanged (CLI semantics — see <see cref="CoalescePlatform"/>).
     /// </summary>
     public static string FormatPlatformProperty(string? platform)
     {
-        var name = NormalizePlatform(platform);
+        var name = Normalize(platform, nameof(platform));
         return name is null ? string.Empty : $" -p:Platform=\"{name}\"";
     }
 

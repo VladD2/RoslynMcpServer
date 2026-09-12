@@ -38,8 +38,16 @@ public sealed class DotNetConfigurationArgumentsTests
     public void FormatPlatformProperty_wraps_name()
     {
         Assert.Equal(" -p:Platform=\"x64\"", DotNetConfigurationArguments.FormatPlatformProperty("x64"));
-        Assert.Equal(" -p:Platform=\"AnyCPU\"", DotNetConfigurationArguments.FormatPlatformProperty("Any CPU"));
         Assert.Equal(string.Empty, DotNetConfigurationArguments.FormatPlatformProperty(null));
+    }
+
+    [Fact]
+    public void FormatPlatformProperty_passes_solution_config_name_through()
+    {
+        // CLI semantics: a .sln needs the exact solution configuration name ("Any CPU" with the space);
+        // aliasing it to "AnyCPU" breaks the build with MSB4126.
+        Assert.Equal(" -p:Platform=\"Any CPU\"", DotNetConfigurationArguments.FormatPlatformProperty("Any CPU"));
+        Assert.Equal(" -p:Platform=\"AnyCPU\"", DotNetConfigurationArguments.FormatPlatformProperty("AnyCPU"));
     }
 
     [Fact]
@@ -48,7 +56,15 @@ public sealed class DotNetConfigurationArgumentsTests
         Assert.Equal("Sit-Debug", DotNetConfigurationArguments.Coalesce("Sit-Debug", "Debug", "configuration"));
         Assert.Equal("Debug", DotNetConfigurationArguments.Coalesce(null, "Debug", "configuration"));
         Assert.Equal("x64", DotNetConfigurationArguments.CoalescePlatform(null, "x64"));
-        Assert.Equal("AnyCPU", DotNetConfigurationArguments.CoalescePlatform("Any CPU", "x64"));
+    }
+
+    [Fact]
+    public void CoalescePlatform_passes_platform_through()
+    {
+        // CLI semantics: no Any CPU -> AnyCPU aliasing (exact solution configuration name for .sln).
+        Assert.Equal("Any CPU", DotNetConfigurationArguments.CoalescePlatform("Any CPU", "x64"));
+        Assert.Equal("Any CPU", DotNetConfigurationArguments.CoalescePlatform(null, "Any CPU"));
+        Assert.Equal("x64", DotNetConfigurationArguments.CoalescePlatform(null, "x64"));
     }
 
     [Fact]

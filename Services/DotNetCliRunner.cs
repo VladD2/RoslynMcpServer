@@ -209,6 +209,24 @@ public static class DotNetCliRunner
         return BuildRunMetadata(dotnet, workingDirectory, combinedOutput, sdkVersion);
     }
 
+    /// <summary>
+    /// Dumps the raw combined output of the last run to <c>&lt;server base dir&gt;/logs/last-{kind}-output.txt</c>
+    /// for offline parser debugging (the tool response on success does not include the raw output).
+    /// </summary>
+    public static void DumpLastOutput(string kind, string combinedOutput)
+    {
+        try
+        {
+            var dir = Path.Combine(AppContext.BaseDirectory, "logs");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, $"last-{kind}-output.txt"), combinedOutput ?? string.Empty);
+        }
+        catch
+        {
+            // best effort
+        }
+    }
+
     public static string FormatHangHints(bool timedOut, bool cancelled)
     {
         var sb = new StringBuilder();
@@ -242,6 +260,11 @@ public static class DotNetCliRunner
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+
+        // Force the English UI locale regardless of the OS locale: MSBuild/VSTest localize their console
+        // strings (e.g. a ru-RU machine prints "Пройдено!" instead of "Passed!"), and the output parsers
+        // expect the en-US format. Inherited by all child processes (host -> MSBuild -> VSTest -> testhost).
+        psi.Environment["DOTNET_CLI_UI_LANGUAGE"] = "en-US";
 
         DotNetSdkEnvironment.ApplyPinnedSdk(psi, workDir);
         return psi;
