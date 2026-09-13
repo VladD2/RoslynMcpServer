@@ -57,8 +57,12 @@ public sealed class VstestOutputParserTests
             "FullyQualifiedName~NexwayOrderCompletedNotificationContext_ReceivedNotification_ExternalEventsPublished",
             "Name suffix",
             requireFilterMatch: true,
-            projectName: "Test");
-        Assert.Contains("Filtered tests passed", md, StringComparison.Ordinal);
+            projectName: "Test",
+            verbose: false,
+            runMetadata: null,
+            extraMeta: null);
+        Assert.Contains("Match: Name suffix", md, StringComparison.Ordinal);
+        Assert.Contains("Total: 1 · Passed: 1 · Failed: 0", md, StringComparison.Ordinal);
         Assert.DoesNotContain("no matching tests", md, StringComparison.Ordinal);
     }
 
@@ -156,9 +160,10 @@ public sealed class VstestOutputParserTests
         Assert.Equal(0, result.Summary?.Passed);
         Assert.Equal(1, result.Summary?.Failed);
 
-        var md = VstestOutputParser.BuildMarkdownReport(result, 1, output, null, null, false, "Test");
-        Assert.Contains("1 Tests Failed", md, StringComparison.Ordinal);
-        Assert.DoesNotContain("**Status:** partial", md, StringComparison.Ordinal);
+        var md = VstestOutputParser.BuildMarkdownReport(result, 1, output, null, null, false, "Test", false, null, null);
+        Assert.Contains("### Error details:", md, StringComparison.Ordinal);
+        Assert.Contains("Total: 1 · Passed: 0 · Failed: 1", md, StringComparison.Ordinal);
+        Assert.DoesNotContain("Status: partial", md, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -350,8 +355,8 @@ public sealed class VstestOutputParserTests
     public void BuildMarkdownReport_includes_partial_status()
     {
         var parse = VstestOutputParser.Parse("noise only", 0);
-        var md = VstestOutputParser.BuildMarkdownReport(parse, 0, "noise only", null, null, false, "Test");
-        Assert.Contains("**Status:** partial", md, StringComparison.Ordinal);
+        var md = VstestOutputParser.BuildMarkdownReport(parse, 0, "noise only", null, null, false, "Test", false, null, null);
+        Assert.Contains("Status: partial", md, StringComparison.Ordinal);
         Assert.Contains("Tests completed (exit 0)", md, StringComparison.Ordinal);
     }
 
@@ -370,11 +375,14 @@ public sealed class VstestOutputParserTests
             "FullyQualifiedName~.MissingTests.MissingMethod",
             "Name suffix `.MissingTests.MissingMethod`",
             requireFilterMatch: true,
-            projectName: "Test");
+            projectName: "Test",
+            verbose: false,
+            runMetadata: null,
+            extraMeta: null);
 
         Assert.Contains("## Filtered test run — no matching tests", md, StringComparison.Ordinal);
-        Assert.Contains("**Agent signal:**", md, StringComparison.Ordinal);
-        Assert.Contains("**Match mode:** Name suffix", md, StringComparison.Ordinal);
+        Assert.Contains("Agent signal:", md, StringComparison.Ordinal);
+        Assert.Contains("Match mode: Name suffix", md, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -402,9 +410,12 @@ public sealed class VstestOutputParserTests
             "FullyQualifiedName~Recovery.FinalStateTests.Test_PartialAtEof_RecoveredWithHoles",
             "Name suffix",
             requireFilterMatch: true,
-            projectName: "Nitra");
+            projectName: "Nitra",
+            verbose: false,
+            runMetadata: null,
+            extraMeta: null);
 
-        Assert.Contains("Filtered tests passed", md, StringComparison.Ordinal);
+        Assert.Contains("Total: 1 · Passed: 1 · Failed: 0", md, StringComparison.Ordinal);
         Assert.DoesNotContain("no matching tests", md, StringComparison.Ordinal);
     }
 
@@ -426,10 +437,13 @@ public sealed class VstestOutputParserTests
             "FullyQualifiedName~ZZZ_NO_SUCH_TEST_ZZZ",
             "Name suffix",
             requireFilterMatch: true,
-            projectName: "Nitra");
+            projectName: "Nitra",
+            verbose: false,
+            runMetadata: null,
+            extraMeta: null);
 
         Assert.Contains("## Filtered test run — no matching tests", md, StringComparison.Ordinal);
-        Assert.Contains("**Agent signal:**", md, StringComparison.Ordinal);
+        Assert.Contains("Agent signal:", md, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -453,9 +467,12 @@ public sealed class VstestOutputParserTests
             "FullyQualifiedName~MyNamespace.MyClass.MyTest",
             "Name suffix",
             requireFilterMatch: true,
-            projectName: "XUnitRepro");
+            projectName: "XUnitRepro",
+            verbose: false,
+            runMetadata: null,
+            extraMeta: null);
 
-        Assert.Contains("Filtered tests passed", md, StringComparison.Ordinal);
+        Assert.Contains("Total: 1 · Passed: 1 · Failed: 0", md, StringComparison.Ordinal);
         Assert.DoesNotContain("no matching tests", md, StringComparison.Ordinal);
         Assert.DoesNotContain("Tests Failed", md, StringComparison.Ordinal);
         Assert.Contains("non-zero", md, StringComparison.Ordinal);
@@ -476,9 +493,12 @@ public sealed class VstestOutputParserTests
             "FullyQualifiedName~ZZZ_NO_SUCH_ZZZ",
             "Name suffix",
             requireFilterMatch: true,
-            projectName: "XUnitRepro");
+            projectName: "XUnitRepro",
+            verbose: false,
+            runMetadata: null,
+            extraMeta: null);
 
         Assert.Contains("## Filtered test run — no matching tests", md, StringComparison.Ordinal);
-        Assert.Contains("**Agent signal:**", md, StringComparison.Ordinal);
+        Assert.Contains("Agent signal:", md, StringComparison.Ordinal);
     }
 }

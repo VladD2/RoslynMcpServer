@@ -46,6 +46,8 @@ public sealed class TestTools
             + "configuration name exactly (e.g. `Any CPU` with the space, `x64`); for a `.csproj` any platform name works. "
             + "Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
         string? platform = null,
+        [Description("Set true to append extended run metadata (dotnet host/SDK/env/working dir). Default false keeps the report concise.")]
+        bool verbose = false,
         CancellationToken cancellationToken = default)
     {
         return ExecuteDotnetTestAsync(
@@ -59,6 +61,7 @@ public sealed class TestTools
             noRestore,
             configuration,
             platform,
+            verbose,
             cancellationToken);
     }
 
@@ -97,6 +100,8 @@ public sealed class TestTools
             + "configuration name exactly (e.g. `Any CPU` with the space, `x64`); for a `.csproj` any platform name works. "
             + "Omit to inherit the config `platform` (`RoslynMcp.jsonc`).")]
         string? platform = null,
+        [Description("Set true to append extended run metadata (dotnet host/SDK/env/working dir). Default false keeps the report concise.")]
+        bool verbose = false,
         CancellationToken cancellationToken = default)
     {
         const string toolName = nameof(RunSpecificTest);
@@ -125,6 +130,7 @@ public sealed class TestTools
                     noRestore,
                     configuration,
                     platform,
+                    verbose,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -222,6 +228,7 @@ public sealed class TestTools
         bool noRestore,
         string? configuration,
         string? platform,
+        bool verbose,
         CancellationToken cancellationToken)
     {
         try
@@ -368,7 +375,10 @@ public sealed class TestTools
                 filter,
                 filterDescription,
                 requireFilterMatch,
-                projectName);
+                projectName,
+                verbose,
+                run.RunMetadata,
+                extraMeta);
 
             if (requireFilterMatch
                 && markdown.Contains("## Filtered test run — no matching tests", StringComparison.Ordinal))
@@ -390,16 +400,16 @@ public sealed class TestTools
                     "Exit code ≠ 0 but no clear VSTest summary or MSBuild/NU diagnostics were parsed "
                     + "(common after hung restore or locked `obj`).");
                 sb.AppendLine(DotNetCliRunner.FormatHangHints(timedOut: false, cancelled: false));
-                sb.AppendLine();
-                sb.AppendLine(run.RunMetadata);
-                sb.AppendLine(extraMeta);
+                if (!verbose)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine(run.RunMetadata);
+                    sb.AppendLine(extraMeta);
+                }
                 return ToolTelemetry.TraceAndReturn(toolName, sb.ToString().TrimEnd());
             }
 
-            return ToolTelemetry.TraceAndReturn(
-                toolName,
-                markdown + Environment.NewLine + Environment.NewLine + run.RunMetadata
-                + Environment.NewLine + extraMeta);
+            return ToolTelemetry.TraceAndReturn(toolName, markdown);
         }
         catch (OperationCanceledException)
         {

@@ -50,7 +50,7 @@ public static class TestDiscoveryHelper
                     {
                         className,
                         methodName = symbol.Name,
-                        fullyQualifiedName = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                        fullyQualifiedName = BuildMethodFqn(symbol),
                         filePath = document.FilePath
                     });
 
@@ -71,8 +71,15 @@ public static class TestDiscoveryHelper
         {
             foreach (var attr in attrList.Attributes)
             {
-                var symbol = model.GetSymbolInfo(attr).Symbol ?? model.GetTypeInfo(attr).Type;
-                var name = symbol?.Name ?? attr.Name.ToString();
+                // GetSymbolInfo on an AttributeSyntax yields the attribute's constructor symbol (".ctor"),
+                // never the attribute class — GetTypeInfo(attr).Type resolves the attribute class itself.
+                var attributeClass = model.GetTypeInfo(attr).Type;
+                var name = attributeClass?.Name ?? attr.Name.ToString();
+                if (name.EndsWith("Attribute", StringComparison.Ordinal))
+                {
+                    name = name[..^"Attribute".Length];
+                }
+
                 if (TestAttributes.Contains(name) || name.EndsWith("Fact", StringComparison.Ordinal) || name.EndsWith("Theory", StringComparison.Ordinal))
                 {
                     return true;
@@ -81,6 +88,23 @@ public static class TestDiscoveryHelper
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Builds the VSTest-style fully qualified name (<c>Namespace.Class.Method</c>, no <c>global::</c>) for a
+    /// test method. <c>IMethodSymbol.ToDisplayString(FullyQualifiedFormat)</c> is unreliable here — for methods
+    /// obtained from <c>GetDeclaredSymbol</c> it returns only the method name, dropping the containing type —
+    /// so the FQN is assembled from the containing type's (correct) FQN plus the method name.
+    /// </summary>
+    private static string BuildMethodFqn(ISymbol method)
+    {
+        var typeFqn = method.ContainingType?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ?? string.Empty;
+        if (typeFqn.StartsWith("global::", StringComparison.Ordinal))
+        {
+            typeFqn = typeFqn["global::".Length..];
+        }
+
+        return string.IsNullOrEmpty(typeFqn) ? method.Name : $"{typeFqn}.{method.Name}";
     }
 
     private static string Serialize(List<object> tests, bool truncated)
